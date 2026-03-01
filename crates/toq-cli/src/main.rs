@@ -1,14 +1,17 @@
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
+use toq_core::adapter::AgentMessage;
 use toq_core::card::AgentCard;
 use toq_core::config::Config;
-use toq_core::constants::PROTOCOL_VERSION;
+use toq_core::constants::{DEFAULT_MAX_MESSAGE_SIZE, PROTOCOL_VERSION};
 use toq_core::crypto::Keypair;
+use toq_core::framing;
 use toq_core::keystore;
+use toq_core::messaging::{self, SendParams};
 use toq_core::negotiation::Features;
 use toq_core::server;
 use toq_core::transport;
-use toq_core::types::Address;
+use toq_core::types::{Address, MessageType};
 
 #[derive(Parser)]
 #[command(name = "toq", version, about = "toq protocol CLI")]
@@ -103,8 +106,8 @@ async fn main() {
         Commands::Send {
             ref address,
             ref message,
-        } => stub(&format!("send {address} {message}")),
-        Commands::Listen => stub("listen"),
+        } => run_send(address, message).await,
+        Commands::Listen => run_listen().await,
         Commands::Export { ref path } => stub(&format!("export {path}")),
         Commands::Import { ref path } => stub(&format!("import {path}")),
         Commands::RotateKeys => stub("rotate-keys"),
@@ -260,7 +263,7 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
                         &features_clone,
                         None,
                     ).await {
-                        Ok(conn) => {
+                        Ok((conn, _stream)) => {
                             println!(
                                 "connected: {} ({})",
                                 conn.peer_card.name, conn.peer_address
@@ -274,6 +277,203 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("\ntoq down");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !keystore::is_setup_complete() {
+        eprintln!("Setup not complete. Run `toq setup` first.");
+        std::process::exit(1);
+    }
+
+    let config = Config::load(&Config::default_path())?;
+    let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
+    let address = Address::new("localhost", &config.agent_name)?;
+    let target_addr: Address = target.parse()?;
+
+    let local_card = AgentCard {
+        name: config.agent_name.clone(),
+        description: None,
+        public_key: keypair.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: None,
+    };
+    let features = Features::default();
+
+    let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
+    println!("connecting to {target_addr}...");
+
+    let (info, mut stream) =
+        server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features).await?;
+
+    println!(
+        "connected to {} ({})",
+        info.peer_card.name, info.peer_address
+    );
+
+    // Send message
+    let msg_id = messaging::send_message(
+        &mut stream,
+        &keypair,
+        SendParams {
+            from: &address,
+            to: std::slice::from_ref(&target_addr),
+            sequence: 2,
+            body: Some(serde_json::json!({ "text": message })),
+            thread_id: None,
+            reply_to: None,
+            priority: None,
+            content_type: Some("application/json".into()),
+            ttl: None,
+        },
+    )
+    .await?;
+
+    println!("sent message {msg_id}");
+
+    // Wait for ack
+    let ack = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE)
+        .await?;
+
+    if ack.msg_type == MessageType::MessageAck {
+        println!("ack received");
+    } else {
+        println!("unexpected response: {:?}", ack.msg_type);
+    }
+
+    Ok(())
+}
+
+async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
+    if !keystore::is_setup_complete() {
+        eprintln!("Setup not complete. Run `toq setup` first.");
+        std::process::exit(1);
+    }
+
+    let config = Config::load(&Config::default_path())?;
+    let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
+    let (certs, key) =
+        keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
+
+    let address = Address::new("localhost", &config.agent_name)?;
+    let tls_config = transport::server_config(certs, key)?;
+    let tls_acceptor = transport::tls_acceptor(tls_config);
+
+    let local_card = AgentCard {
+        name: config.agent_name.clone(),
+        description: None,
+        public_key: keypair.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: config.accept_files,
+        max_file_size: None,
+        max_message_size: Some(config.max_message_size),
+        connection_mode: Some(config.connection_mode.clone()),
+    };
+    let features = Features::default();
+
+    let bind_addr = format!("0.0.0.0:{}", config.port);
+    let listener = server::bind(&bind_addr).await?;
+    println!("toq listen on {address}");
+    println!("  listening on {bind_addr}");
+    println!("  waiting for messages...\n");
+
+    loop {
+        tokio::select! {
+            accept = listener.accept() => {
+                let (tcp, peer_addr) = accept?;
+                let tls_acceptor = tls_acceptor.clone();
+                let keypair_clone = keypair.clone();
+                let address_clone = address.clone();
+                let card_clone = local_card.clone();
+                let features_clone = features.clone();
+
+                tokio::spawn(async move {
+                    match server::accept_connection(
+                        tcp,
+                        &tls_acceptor,
+                        &keypair_clone,
+                        &address_clone,
+                        &card_clone,
+                        &features_clone,
+                        None,
+                    ).await {
+                        Ok((info, mut stream)) => {
+                            println!("connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
+
+                            // Receive loop
+                            let mut seq = 2u64;
+                            loop {
+                                match framing::recv_envelope(
+                                    &mut stream,
+                                    &info.peer_public_key,
+                                    DEFAULT_MAX_MESSAGE_SIZE,
+                                ).await {
+                                    Ok(envelope) => {
+                                        match envelope.msg_type {
+                                            MessageType::MessageSend => {
+                                                let agent_msg = AgentMessage::from_envelope(&envelope);
+                                                println!("--- message from {} ---", agent_msg.from);
+                                                if let Some(body) = &agent_msg.body {
+                                                    println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
+                                                }
+                                                println!("---");
+
+                                                // Send ack
+                                                let _ = messaging::send_ack(
+                                                    &mut stream,
+                                                    &keypair_clone,
+                                                    &address_clone,
+                                                    &info.peer_address,
+                                                    &envelope.id,
+                                                    seq,
+                                                ).await;
+                                                seq += 1;
+                                            }
+                                            MessageType::SessionDisconnect => {
+                                                println!("peer disconnected");
+                                                break;
+                                            }
+                                            MessageType::Heartbeat => {
+                                                let _ = toq_core::connection::send_heartbeat_ack(
+                                                    &mut stream,
+                                                    &keypair_clone,
+                                                    &address_clone,
+                                                    &info.peer_address,
+                                                    &envelope.id,
+                                                    seq,
+                                                ).await;
+                                                seq += 1;
+                                            }
+                                            other => {
+                                                println!("received: {other:?}");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("connection closed: {e}");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("connection from {peer_addr} failed: {e}");
+                        }
+                    }
+                });
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nstopped");
                 break;
             }
         }

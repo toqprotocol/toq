@@ -13,9 +13,9 @@ use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::transport;
 use crate::types::Address;
 
-/// A fully established connection after handshake, negotiation, and card exchange.
+/// Connection metadata after handshake, negotiation, and card exchange.
 #[derive(Debug)]
-pub struct EstablishedConnection {
+pub struct ConnectionInfo {
     pub peer_public_key: PublicKey,
     pub peer_address: Address,
     pub session_id: String,
@@ -31,8 +31,8 @@ pub async fn bind(addr: &str) -> Result<TcpListener, Error> {
         .map_err(|e| Error::Io(e.to_string()))
 }
 
-/// Run the full server-side protocol flow on an accepted TCP connection:
-/// TLS → handshake → policy check → negotiation → card exchange → ACTIVE.
+/// Run the full server-side protocol flow on an accepted TCP connection.
+/// Returns the connection info and the live TLS stream for continued use.
 pub async fn accept_connection(
     tcp: TcpStream,
     tls_acceptor: &TlsAcceptor,
@@ -41,7 +41,7 @@ pub async fn accept_connection(
     local_card: &AgentCard,
     local_features: &Features,
     policy: Option<&PolicyEngine>,
-) -> Result<EstablishedConnection, Error> {
+) -> Result<(ConnectionInfo, tokio_rustls::server::TlsStream<TcpStream>), Error> {
     // TLS
     let mut tls_stream = transport::tls_accept(tls_acceptor, tcp).await?;
 
@@ -105,25 +105,27 @@ pub async fn accept_connection(
     )
     .await?;
 
-    Ok(EstablishedConnection {
+    let info = ConnectionInfo {
         peer_public_key: hs.peer_public_key,
         peer_address: hs.peer_address,
         session_id: hs.session_id,
         features,
         peer_card,
         state: ConnectionState::Active,
-    })
+    };
+
+    Ok((info, tls_stream))
 }
 
-/// Run the full client-side protocol flow:
-/// TCP connect → TLS → handshake → negotiation → card exchange → ACTIVE.
+/// Run the full client-side protocol flow.
+/// Returns the connection info and the live TLS stream for continued use.
 pub async fn connect_to_peer(
     target: &str,
     keypair: &Keypair,
     address: &Address,
     local_card: &AgentCard,
     local_features: &Features,
-) -> Result<EstablishedConnection, Error> {
+) -> Result<(ConnectionInfo, tokio_rustls::client::TlsStream<TcpStream>), Error> {
     // TCP + TLS
     let tcp = TcpStream::connect(target)
         .await
@@ -166,12 +168,14 @@ pub async fn connect_to_peer(
     )
     .await?;
 
-    Ok(EstablishedConnection {
+    let info = ConnectionInfo {
         peer_public_key: hs.peer_public_key,
         peer_address: hs.peer_address,
         session_id: hs.session_id,
         features,
         peer_card,
         state: ConnectionState::Active,
-    })
+    };
+
+    Ok((info, tls_stream))
 }

@@ -14,3 +14,4 @@ path = "src/main.rs"
 toq-core = { path = "../toq-core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde_json = "1"
