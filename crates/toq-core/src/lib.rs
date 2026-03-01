@@ -7,5 +7,6 @@ pub mod error;
 pub mod framing;
 pub mod handshake;
 pub mod negotiation;
+pub mod server;
 pub mod transport;
 pub mod types;

@@ -12,3 +12,5 @@ path = "src/main.rs"
 
 [dependencies]
 toq-core = { path = "../toq-core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

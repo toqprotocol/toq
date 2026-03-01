@@ -2,6 +2,8 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme};
 use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::error::Error;
 
@@ -85,4 +87,35 @@ impl ServerCertVerifier for NoVerifier {
             .signature_verification_algorithms
             .supported_schemes()
     }
+}
+
+/// Create a TLS acceptor from a server config.
+pub fn tls_acceptor(config: Arc<ServerConfig>) -> TlsAcceptor {
+    TlsAcceptor::from(config)
+}
+
+/// Accept a TLS connection on a TCP stream.
+pub async fn tls_accept(
+    acceptor: &TlsAcceptor,
+    tcp: TcpStream,
+) -> Result<tokio_rustls::server::TlsStream<TcpStream>, Error> {
+    acceptor
+        .accept(tcp)
+        .await
+        .map_err(|e| Error::Crypto(e.to_string()))
+}
+
+/// Connect to a peer over TLS.
+pub async fn tls_connect(
+    tcp: TcpStream,
+    config: Arc<ClientConfig>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Error> {
+    let connector = TlsConnector::from(config);
+    let server_name = ServerName::try_from("localhost")
+        .map_err(|e| Error::Crypto(e.to_string()))?
+        .to_owned();
+    connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| Error::Crypto(e.to_string()))
 }

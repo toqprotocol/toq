@@ -6,6 +6,7 @@ use std::fmt;
 use crate::constants::ED25519_PREFIX;
 use crate::error::Error;
 
+#[derive(Clone)]
 pub struct Keypair {
     signing_key: ed25519_dalek::SigningKey,
 }
