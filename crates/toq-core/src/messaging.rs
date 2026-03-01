@@ -50,6 +50,7 @@ where
         e2e_nonce: None,
         body: params.body,
     };
+    envelope.check_self_message()?;
     framing::send_envelope(stream, &mut envelope, keypair).await?;
     Ok(id)
 }

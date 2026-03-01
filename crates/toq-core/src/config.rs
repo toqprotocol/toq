@@ -75,17 +75,17 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::Crypto(e.to_string()))?;
-        toml::from_str(&contents).map_err(|e| Error::Crypto(e.to_string()))
+        let contents = std::fs::read_to_string(path).map_err(|e| Error::Io(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| Error::Io(e.to_string()))
     }
 
     /// Save config to a TOML file.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::Crypto(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
         }
-        let contents = toml::to_string_pretty(self).map_err(|e| Error::Crypto(e.to_string()))?;
-        std::fs::write(path, contents).map_err(|e| Error::Crypto(e.to_string()))
+        let contents = toml::to_string_pretty(self).map_err(|e| Error::Io(e.to_string()))?;
+        std::fs::write(path, contents).map_err(|e| Error::Io(e.to_string()))
     }
 }
 

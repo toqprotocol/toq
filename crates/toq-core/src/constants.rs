@@ -63,6 +63,27 @@ pub const DEDUP_WINDOW: Duration = Duration::from_secs(300);
 /// Maximum pending approval requests.
 pub const MAX_PENDING_APPROVALS: usize = 100;
 
+/// Maximum backpressure retry_after value in seconds.
+pub const MAX_BACKPRESSURE_RETRY_AFTER: u32 = 60;
+
+/// Default new connections per IP per second.
+pub const DEFAULT_CONNECTIONS_PER_IP_PER_SEC: usize = 10;
+
+/// Default messages per connection per second.
+pub const DEFAULT_MESSAGES_PER_CONNECTION_PER_SEC: usize = 100;
+
+/// Default maximum concurrent connections.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1000;
+
+/// Default maximum concurrent threads per connection.
+pub const DEFAULT_MAX_THREADS_PER_CONNECTION: usize = 100;
+
+/// Default message queue depth.
+pub const DEFAULT_MESSAGE_QUEUE_DEPTH: usize = 10000;
+
+/// Key rotation grace period.
+pub const KEY_ROTATION_GRACE_PERIOD: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 /// DNS service prefix for toq TXT record queries.
 pub const DNS_SERVICE_PREFIX: &str = "_toq._tcp.";
 

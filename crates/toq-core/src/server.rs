@@ -63,6 +63,16 @@ pub async fn accept_connection(
                 ));
             }
             PolicyDecision::PendingApproval => {
+                // Send approval.request to the initiator before returning.
+                crate::connection::send_approval_request(
+                    &mut tls_stream,
+                    keypair,
+                    address,
+                    &hs.peer_address,
+                    Some("Your connection request is pending review."),
+                    0,
+                )
+                .await?;
                 return Err(Error::InvalidEnvelope("connection pending approval".into()));
             }
         }

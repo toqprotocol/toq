@@ -15,6 +15,7 @@ pub struct HandshakeResult {
     pub peer_public_key: PublicKey,
     pub peer_address: Address,
     pub session_id: String,
+    pub rotation_proof: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -87,6 +88,7 @@ where
         peer_public_key: peer_key,
         peer_address: recv_creds.address,
         session_id: recv_creds.session_id,
+        rotation_proof: recv_creds.rotation_proof,
     })
 }
 
@@ -138,5 +140,6 @@ where
         peer_public_key: peer_key,
         peer_address: init_creds.address,
         session_id,
+        rotation_proof: init_creds.rotation_proof,
     })
 }

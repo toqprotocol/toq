@@ -195,7 +195,7 @@ where
             "selected_version": PROTOCOL_VERSION,
             "features": {
                 "streaming": agreed_streaming,
-                "compression": agreed_compression.unwrap_or_default(),
+                "compression": agreed_compression,
                 "e2e_encryption": agreed_e2e,
             },
         })),

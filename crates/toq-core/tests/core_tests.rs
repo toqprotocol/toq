@@ -1077,3 +1077,188 @@ fn adapter_type_serde() {
     let parsed: AdapterType = serde_json::from_str("\"unix\"").unwrap();
     assert_eq!(parsed, AdapterType::Unix);
 }
+
+// --- Self-message prevention ---
+
+#[tokio::test]
+async fn send_message_rejects_self() {
+    use toq_core::messaging::{self, SendParams};
+
+    let (stream, _) = tokio::io::duplex(8192);
+    let (mut _r, mut w) = tokio::io::split(stream);
+
+    let kp = Keypair::generate();
+    let addr = Address::new("alice.dev", "assistant").unwrap();
+
+    let result = messaging::send_message(
+        &mut w,
+        &kp,
+        SendParams {
+            from: &addr,
+            to: &[addr.clone()],
+            sequence: 1,
+            body: None,
+            thread_id: None,
+            reply_to: None,
+            priority: None,
+            content_type: None,
+            ttl: None,
+        },
+    )
+    .await;
+
+    assert!(result.is_err());
+}
+
+// --- TTL expiry ---
+
+#[test]
+fn envelope_validate_ttl_expired() {
+    let kp = Keypair::generate();
+    let mut env = test_envelope(&kp);
+    env.timestamp = "2020-01-01T00:00:00Z".into();
+    env.ttl = Some(1);
+    assert!(env.validate().is_err());
+}
+
+#[test]
+fn envelope_validate_ttl_not_expired() {
+    let kp = Keypair::generate();
+    let mut env = test_envelope(&kp);
+    env.timestamp = toq_core::now_utc();
+    env.ttl = Some(3600);
+    env.validate().unwrap();
+}
+
+// --- Replay prevention (recv_envelope_checked) ---
+
+#[tokio::test]
+async fn recv_envelope_checked_rejects_replay() {
+    use toq_core::delivery::DedupSet;
+    use toq_core::framing;
+    use toq_core::replay::SequenceTracker;
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut _cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut _sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let pub_key = kp.public_key();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+
+    // Send two envelopes with same sequence (replay)
+    let mut env1 = Envelope {
+        version: PROTOCOL_VERSION.into(),
+        id: Uuid::new_v4(),
+        msg_type: MessageType::MessageSend,
+        from: from.clone(),
+        to: vec![to.clone()],
+        thread_id: None,
+        reply_to: None,
+        sequence: 1,
+        timestamp: toq_core::now_utc(),
+        priority: None,
+        content_type: None,
+        ttl: None,
+        compression: None,
+        signature: String::new(),
+        e2e_nonce: None,
+        body: None,
+    };
+    framing::send_envelope(&mut cw, &mut env1, &kp)
+        .await
+        .unwrap();
+
+    let mut env2 = env1.clone();
+    env2.id = Uuid::new_v4();
+    env2.sequence = 1; // same sequence = replay
+    env2.signature = String::new();
+    framing::send_envelope(&mut cw, &mut env2, &kp)
+        .await
+        .unwrap();
+
+    let mut tracker = SequenceTracker::new();
+    let mut dedup = DedupSet::new();
+
+    // First should succeed
+    let r1 = framing::recv_envelope_checked(&mut sr, &pub_key, 1_048_576, &mut tracker, &mut dedup)
+        .await;
+    assert!(r1.is_ok());
+
+    // Second should fail (sequence replay)
+    let r2 = framing::recv_envelope_checked(&mut sr, &pub_key, 1_048_576, &mut tracker, &mut dedup)
+        .await;
+    assert!(r2.is_err());
+}
+
+// --- New send functions ---
+
+#[tokio::test]
+async fn send_system_error() {
+    use toq_core::connection;
+    use toq_core::framing;
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut _cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut _sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let pub_key = kp.public_key();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+
+    connection::send_system_error(
+        &mut cw,
+        &kp,
+        &from,
+        &to,
+        "invalid_envelope",
+        "bad field",
+        Some("msg-123"),
+        1,
+    )
+    .await
+    .unwrap();
+
+    let env = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(env.msg_type, MessageType::SystemError);
+    let body = env.body.unwrap();
+    assert_eq!(body["code"].as_str().unwrap(), "invalid_envelope");
+    assert_eq!(body["related_id"].as_str().unwrap(), "msg-123");
+}
+
+#[tokio::test]
+async fn send_backpressure_and_clear() {
+    use toq_core::connection;
+    use toq_core::framing;
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut _cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut _sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let pub_key = kp.public_key();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+
+    connection::send_backpressure(&mut cw, &kp, &from, &to, 30, 1)
+        .await
+        .unwrap();
+    connection::send_backpressure_clear(&mut cw, &kp, &from, &to, 2)
+        .await
+        .unwrap();
+
+    let bp = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(bp.msg_type, MessageType::Backpressure);
+    assert_eq!(bp.body.unwrap()["retry_after"].as_u64().unwrap(), 30);
+
+    let clear = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(clear.msg_type, MessageType::BackpressureClear);
+}
