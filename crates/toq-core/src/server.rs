@@ -28,7 +28,7 @@ pub struct EstablishedConnection {
 pub async fn bind(addr: &str) -> Result<TcpListener, Error> {
     TcpListener::bind(addr)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))
+        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Run the full server-side protocol flow on an accepted TCP connection:
@@ -51,7 +51,7 @@ pub async fn accept_connection(
         handshake::accept(&mut tls_stream, keypair, address),
     )
     .await
-    .map_err(|_| Error::Crypto("handshake timeout".into()))??;
+    .map_err(|_| Error::Io("handshake timeout".into()))??;
 
     // Policy check
     if let Some(engine) = policy {
@@ -91,7 +91,7 @@ pub async fn accept_connection(
         ),
     )
     .await
-    .map_err(|_| Error::Crypto("negotiation timeout".into()))??;
+    .map_err(|_| Error::Io("negotiation timeout".into()))??;
 
     // Card exchange
     let peer_card = card::exchange(
@@ -127,7 +127,7 @@ pub async fn connect_to_peer(
     // TCP + TLS
     let tcp = TcpStream::connect(target)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     let client_cfg = transport::client_config();
     let mut tls_stream = transport::tls_connect(tcp, client_cfg).await?;
 
@@ -137,7 +137,7 @@ pub async fn connect_to_peer(
         handshake::initiate(&mut tls_stream, keypair, address),
     )
     .await
-    .map_err(|_| Error::Crypto("handshake timeout".into()))??;
+    .map_err(|_| Error::Io("handshake timeout".into()))??;
 
     // Negotiation (with timeout)
     let features = timeout(
@@ -152,7 +152,7 @@ pub async fn connect_to_peer(
         ),
     )
     .await
-    .map_err(|_| Error::Crypto("negotiation timeout".into()))??;
+    .map_err(|_| Error::Io("negotiation timeout".into()))??;
 
     // Card exchange
     let peer_card = card::exchange(

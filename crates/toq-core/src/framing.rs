@@ -13,11 +13,11 @@ where
     stream
         .write_all(&len)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     stream
         .write_all(data)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     Ok(())
 }
 
@@ -30,7 +30,7 @@ where
     stream
         .read_exact(&mut len_buf)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > max_size {
         return Err(Error::InvalidEnvelope("payload too large".into()));
@@ -39,7 +39,7 @@ where
     stream
         .read_exact(&mut buf)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     Ok(buf)
 }
 

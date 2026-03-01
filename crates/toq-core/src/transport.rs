@@ -102,7 +102,7 @@ pub async fn tls_accept(
     acceptor
         .accept(tcp)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))
+        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Connect to a peer over TLS.
@@ -112,10 +112,10 @@ pub async fn tls_connect(
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Error> {
     let connector = TlsConnector::from(config);
     let server_name = ServerName::try_from("localhost")
-        .map_err(|e| Error::Crypto(e.to_string()))?
+        .map_err(|e| Error::Io(e.to_string()))?
         .to_owned();
     connector
         .connect(server_name, tcp)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))
+        .map_err(|e| Error::Io(e.to_string()))
 }

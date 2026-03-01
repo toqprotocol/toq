@@ -58,7 +58,7 @@ where
     stream
         .write_all(&MAGIC_BYTES)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
 
     // Step 2: send initiator credentials
     let (challenge_bytes, challenge_b64) = generate_challenge();
@@ -81,7 +81,7 @@ where
     let peer_key = PublicKey::from_encoded(&recv_creds.public_key)?;
     let recv_challenge_bytes = BASE64_STANDARD
         .decode(&recv_creds.challenge)
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     peer_key.verify(&recv_challenge_bytes, &recv_creds.challenge_signature)?;
 
     Ok(HandshakeResult {
@@ -106,7 +106,7 @@ where
     stream
         .read_exact(&mut magic)
         .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     if magic != MAGIC_BYTES {
         return Err(Error::InvalidEnvelope("invalid magic bytes".into()));
     }
@@ -120,7 +120,7 @@ where
     let peer_key = PublicKey::from_encoded(&init_creds.public_key)?;
     let init_challenge_bytes = BASE64_STANDARD
         .decode(&init_creds.challenge)
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+        .map_err(|e| Error::Io(e.to_string()))?;
     peer_key.verify(&init_challenge_bytes, &init_creds.challenge_signature)?;
 
     // Step 3: send receiver credentials
