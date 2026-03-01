@@ -955,3 +955,99 @@ fn to_discovered_agent() {
     );
     assert_eq!(agent.public_key_b64, "abc");
 }
+
+// --- Config ---
+
+#[test]
+fn config_defaults() {
+    use toq_core::config::Config;
+
+    let config = Config::default();
+    assert_eq!(config.agent_name, "agent");
+    assert_eq!(config.port, DEFAULT_PORT);
+    assert_eq!(config.connection_mode, "approval");
+    assert_eq!(config.max_message_size, 1_048_576);
+    assert_eq!(config.heartbeat_interval, 30);
+    assert!(!config.mdns_enabled);
+}
+
+#[test]
+fn config_roundtrip_toml() {
+    use toq_core::config::Config;
+
+    let config = Config::default();
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    let parsed: Config = toml::from_str(&toml_str).unwrap();
+    assert_eq!(parsed.agent_name, config.agent_name);
+    assert_eq!(parsed.port, config.port);
+    assert_eq!(parsed.connection_mode, config.connection_mode);
+}
+
+#[test]
+fn config_partial_toml() {
+    use toq_core::config::Config;
+
+    let partial = r#"
+agent_name = "my-bot"
+port = 7070
+"#;
+    let config: Config = toml::from_str(partial).unwrap();
+    assert_eq!(config.agent_name, "my-bot");
+    assert_eq!(config.port, 7070);
+    // Everything else should be defaults
+    assert_eq!(config.connection_mode, "approval");
+    assert_eq!(config.heartbeat_interval, 30);
+}
+
+// --- Error Catalog ---
+
+#[test]
+fn error_code_severity() {
+    use toq_core::error_catalog::{ErrorCode, Severity};
+
+    assert_eq!(ErrorCode::InvalidSignature.severity(), Severity::Fatal);
+    assert!(ErrorCode::InvalidSignature.is_fatal());
+    assert_eq!(ErrorCode::DuplicateMessage.severity(), Severity::NonFatal);
+    assert!(!ErrorCode::DuplicateMessage.is_fatal());
+    assert_eq!(ErrorCode::Blocked.severity(), Severity::Silent);
+}
+
+#[test]
+fn error_code_serde() {
+    use toq_core::error_catalog::ErrorCode;
+
+    let code = ErrorCode::AgentUnavailable;
+    let json = serde_json::to_string(&code).unwrap();
+    assert_eq!(json, "\"agent_unavailable\"");
+    let parsed: ErrorCode = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, code);
+}
+
+// --- Rate Limiting ---
+
+#[test]
+fn ratelimit_allows_under_limit() {
+    use std::net::IpAddr;
+    use toq_core::ratelimit::RateLimiter;
+
+    let mut limiter = RateLimiter::new(5);
+    let ip: IpAddr = "127.0.0.1".parse().unwrap();
+    for _ in 0..5 {
+        assert!(limiter.check(ip));
+    }
+    assert!(!limiter.check(ip)); // 6th should fail
+}
+
+#[test]
+fn ratelimit_separate_ips() {
+    use std::net::IpAddr;
+    use toq_core::ratelimit::RateLimiter;
+
+    let mut limiter = RateLimiter::new(2);
+    let ip1: IpAddr = "127.0.0.1".parse().unwrap();
+    let ip2: IpAddr = "127.0.0.2".parse().unwrap();
+    assert!(limiter.check(ip1));
+    assert!(limiter.check(ip1));
+    assert!(!limiter.check(ip1));
+    assert!(limiter.check(ip2)); // different IP, fresh limit
+}
