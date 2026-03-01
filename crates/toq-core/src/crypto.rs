@@ -1,9 +1,11 @@
 use base64::prelude::*;
 use ed25519_dalek::{Signer, Verifier};
 use rand::rngs::OsRng;
+use std::fmt;
 
 use crate::error::Error;
 
+const KEY_PREFIX: &str = "ed25519:";
 const SIGNATURE_PREFIX: &str = "ed25519:";
 
 pub struct Keypair {
@@ -54,5 +56,36 @@ impl PublicKey {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_bytes()
+    }
+
+    pub fn from_encoded(s: &str) -> Result<Self, Error> {
+        let encoded = s
+            .strip_prefix(KEY_PREFIX)
+            .ok_or_else(|| Error::Crypto("public key must start with ed25519:".into()))?;
+        let bytes = BASE64_STANDARD
+            .decode(encoded)
+            .map_err(|e| Error::Crypto(e.to_string()))?;
+        let key = ed25519_dalek::VerifyingKey::from_bytes(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::Crypto("invalid public key length".into()))?,
+        )
+        .map_err(|_| Error::Crypto("invalid public key".into()))?;
+        Ok(Self(key))
+    }
+
+    pub fn to_encoded(&self) -> String {
+        format!(
+            "{}{}",
+            KEY_PREFIX,
+            BASE64_STANDARD.encode(self.0.as_bytes())
+        )
+    }
+}
+
+impl fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_encoded())
     }
 }

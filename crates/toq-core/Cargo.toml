@@ -14,3 +14,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 rand = "0.8"
 thiserror = "2"
+tokio = { version = "1", features = ["net", "io-util", "time"] }
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rcgen = "0.13"
