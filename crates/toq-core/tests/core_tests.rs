@@ -1262,3 +1262,112 @@ async fn send_backpressure_and_clear() {
         .unwrap();
     assert_eq!(clear.msg_type, MessageType::BackpressureClear);
 }
+
+// --- E2E Encryption ---
+
+#[test]
+fn e2e_encrypt_decrypt_roundtrip() {
+    use toq_core::e2e;
+
+    let sender_kp = Keypair::generate();
+    let receiver_kp = Keypair::generate();
+    let receiver_x25519 = e2e::x25519_public_key(&receiver_kp);
+
+    let plaintext = b"secret agent message";
+    let (ciphertext, nonce) = e2e::encrypt_body(plaintext, &sender_kp, &receiver_x25519).unwrap();
+
+    let sender_x25519 = e2e::x25519_public_key(&sender_kp);
+    let decrypted = e2e::decrypt_body(&ciphertext, &nonce, &receiver_kp, &sender_x25519).unwrap();
+
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn e2e_wrong_key_fails() {
+    use toq_core::e2e;
+
+    let sender_kp = Keypair::generate();
+    let receiver_kp = Keypair::generate();
+    let wrong_kp = Keypair::generate();
+    let receiver_x25519 = e2e::x25519_public_key(&receiver_kp);
+
+    let (ciphertext, nonce) = e2e::encrypt_body(b"secret", &sender_kp, &receiver_x25519).unwrap();
+
+    let wrong_x25519 = e2e::x25519_public_key(&wrong_kp);
+    let result = e2e::decrypt_body(&ciphertext, &nonce, &receiver_kp, &wrong_x25519);
+    assert!(result.is_err());
+}
+
+// --- Compression ---
+
+#[test]
+fn gzip_roundtrip() {
+    use toq_core::compress;
+
+    let data = b"hello toq protocol, this is a test of gzip compression";
+    let compressed = compress::gzip_compress(data).unwrap();
+    let decompressed = compress::gzip_decompress(&compressed).unwrap();
+    assert_eq!(decompressed, data);
+}
+
+#[test]
+fn zstd_roundtrip() {
+    use toq_core::compress;
+
+    let data = b"hello toq protocol, this is a test of zstd compression";
+    let compressed = compress::zstd_compress(data).unwrap();
+    let decompressed = compress::zstd_decompress(&compressed).unwrap();
+    assert_eq!(decompressed, data);
+}
+
+// --- Session Store ---
+
+#[test]
+fn session_register_and_resume() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp = Keypair::generate();
+    store.register("sess-1", &kp.public_key());
+    store.update_sequence("sess-1", 42);
+
+    let seq = store.validate_resume("sess-1", &kp.public_key());
+    assert_eq!(seq, Some(42));
+}
+
+#[test]
+fn session_resume_wrong_key() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp1 = Keypair::generate();
+    let kp2 = Keypair::generate();
+    store.register("sess-1", &kp1.public_key());
+
+    assert!(store.validate_resume("sess-1", &kp2.public_key()).is_none());
+}
+
+#[test]
+fn session_duplicate_detection() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp = Keypair::generate();
+    store.register("sess-1", &kp.public_key());
+
+    let dup = store.check_duplicate(&kp.public_key());
+    assert_eq!(dup, Some("sess-1".to_string()));
+}
+
+#[test]
+fn session_remove() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp = Keypair::generate();
+    store.register("sess-1", &kp.public_key());
+    store.remove("sess-1");
+
+    assert!(store.check_duplicate(&kp.public_key()).is_none());
+    assert!(store.validate_resume("sess-1", &kp.public_key()).is_none());
+}
