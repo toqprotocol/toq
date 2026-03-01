@@ -500,6 +500,154 @@ fn connection_state_values() {
     assert_eq!(ConnectionState::Active, ConnectionState::Active);
 }
 
+// --- Policy ---
+
+#[test]
+fn policy_open_accepts_all() {
+    use toq_core::policy::*;
+
+    let engine = PolicyEngine::new(ConnectionMode::Open);
+    let kp = Keypair::generate();
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_blocklist_overrides_open() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    let kp = Keypair::generate();
+    engine.block(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_allowlist_accepts_known() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    engine.allow(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_approval_flow() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+
+    // Unknown agent gets pending
+    assert_eq!(
+        engine.check(&kp.public_key()),
+        PolicyDecision::PendingApproval
+    );
+
+    // After approval, accepted immediately
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_approval_deny() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.add_pending(&kp.public_key());
+    assert_eq!(engine.pending_count(), 1);
+    engine.deny(&kp.public_key());
+    assert_eq!(engine.pending_count(), 0);
+}
+
+#[test]
+fn policy_block_removes_from_allowlist() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    engine.allow(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.block(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_unblock() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    let kp = Keypair::generate();
+    engine.block(&kp.public_key());
+    assert!(engine.is_blocked(&kp.public_key()));
+    engine.unblock(&kp.public_key());
+    assert!(!engine.is_blocked(&kp.public_key()));
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+// --- Replay ---
+
+#[test]
+fn sequence_tracker_accepts_increasing() {
+    use toq_core::replay::SequenceTracker;
+
+    let mut tracker = SequenceTracker::new();
+    assert!(tracker.check(0));
+    assert!(tracker.check(1));
+    assert!(tracker.check(5));
+    assert_eq!(tracker.highest(), Some(5));
+}
+
+#[test]
+fn sequence_tracker_rejects_replay() {
+    use toq_core::replay::SequenceTracker;
+
+    let mut tracker = SequenceTracker::new();
+    assert!(tracker.check(0));
+    assert!(tracker.check(1));
+    assert!(!tracker.check(1)); // replay
+    assert!(!tracker.check(0)); // old
+}
+
+#[test]
+fn sequence_tracker_reset() {
+    use toq_core::replay::SequenceTracker;
+
+    let mut tracker = SequenceTracker::new();
+    assert!(tracker.check(0));
+    assert!(tracker.check(5));
+    tracker.reset(2);
+    assert!(!tracker.check(2)); // at reset point
+    assert!(tracker.check(3)); // above reset
+}
+
+// --- Key Rotation ---
+
+#[test]
+fn key_rotation_proof() {
+    use toq_core::crypto::{generate_rotation_proof, verify_rotation_proof};
+
+    let old_kp = Keypair::generate();
+    let new_kp = Keypair::generate();
+
+    let proof = generate_rotation_proof(&old_kp, &new_kp.public_key());
+    verify_rotation_proof(&old_kp.public_key(), &new_kp.public_key(), &proof).unwrap();
+}
+
+#[test]
+fn key_rotation_proof_wrong_key_fails() {
+    use toq_core::crypto::{generate_rotation_proof, verify_rotation_proof};
+
+    let old_kp = Keypair::generate();
+    let new_kp = Keypair::generate();
+    let wrong_kp = Keypair::generate();
+
+    let proof = generate_rotation_proof(&old_kp, &new_kp.public_key());
+    assert!(verify_rotation_proof(&wrong_kp.public_key(), &new_kp.public_key(), &proof).is_err());
+}
+
 // --- Messaging ---
 
 #[tokio::test]

@@ -60,6 +60,9 @@ pub const RETRY_DELAYS: [Duration; 5] = [
 /// Deduplication window for message IDs.
 pub const DEDUP_WINDOW: Duration = Duration::from_secs(300);
 
+/// Maximum pending approval requests.
+pub const MAX_PENDING_APPROVALS: usize = 100;
+
 /// MIME types that MUST be rejected by the toq process.
 pub const BLOCKED_CONTENT_TYPES: &[&str] = &[
     "application/x-executable",

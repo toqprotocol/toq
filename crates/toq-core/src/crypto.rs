@@ -88,3 +88,17 @@ impl fmt::Display for PublicKey {
         write!(f, "{}", self.to_encoded())
     }
 }
+
+/// Generate a rotation proof: the old key signs the new public key.
+pub fn generate_rotation_proof(old_keypair: &Keypair, new_public_key: &PublicKey) -> String {
+    old_keypair.sign(new_public_key.as_bytes())
+}
+
+/// Verify a rotation proof: check that the old key signed the new public key.
+pub fn verify_rotation_proof(
+    old_public_key: &PublicKey,
+    new_public_key: &PublicKey,
+    proof: &str,
+) -> Result<(), crate::error::Error> {
+    old_public_key.verify(new_public_key.as_bytes(), proof)
+}

@@ -9,6 +9,8 @@ pub mod framing;
 pub mod handshake;
 pub mod messaging;
 pub mod negotiation;
+pub mod policy;
+pub mod replay;
 pub mod server;
 pub mod streaming;
 pub mod transport;
