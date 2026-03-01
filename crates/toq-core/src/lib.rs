@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod card;
 pub mod config;
 pub mod connection;

@@ -1051,3 +1051,29 @@ fn ratelimit_separate_ips() {
     assert!(!limiter.check(ip1));
     assert!(limiter.check(ip2)); // different IP, fresh limit
 }
+
+// --- Adapter ---
+
+#[test]
+fn agent_message_from_envelope() {
+    use toq_core::adapter::AgentMessage;
+
+    let kp = Keypair::generate();
+    let mut env = test_envelope(&kp);
+    env.thread_id = Some("t1".into());
+    let msg = AgentMessage::from_envelope(&env);
+    assert_eq!(msg.from, "toq://alice.dev/assistant");
+    assert_eq!(msg.msg_type, "message.send");
+    assert_eq!(msg.thread_id.as_deref(), Some("t1"));
+    assert!(msg.body.is_some());
+}
+
+#[test]
+fn adapter_type_serde() {
+    use toq_core::adapter::AdapterType;
+
+    let json = serde_json::to_string(&AdapterType::Http).unwrap();
+    assert_eq!(json, "\"http\"");
+    let parsed: AdapterType = serde_json::from_str("\"unix\"").unwrap();
+    assert_eq!(parsed, AdapterType::Unix);
+}
