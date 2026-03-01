@@ -42,6 +42,24 @@ pub const SESSION_RESUME_TIMEOUT: Duration = Duration::from_secs(300);
 /// Graceful shutdown timeout.
 pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Ack timeout before retry.
+pub const ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum retry attempts before marking a message as undeliverable.
+pub const MAX_RETRIES: usize = 5;
+
+/// Retry delays (exponential backoff).
+pub const RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+];
+
+/// Deduplication window for message IDs.
+pub const DEDUP_WINDOW: Duration = Duration::from_secs(300);
+
 /// MIME types that MUST be rejected by the toq process.
 pub const BLOCKED_CONTENT_TYPES: &[&str] = &[
     "application/x-executable",

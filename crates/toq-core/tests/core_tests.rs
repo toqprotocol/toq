@@ -500,6 +500,179 @@ fn connection_state_values() {
     assert_eq!(ConnectionState::Active, ConnectionState::Active);
 }
 
+// --- Messaging ---
+
+#[tokio::test]
+async fn send_message_and_ack() {
+    use toq_core::framing;
+    use toq_core::messaging::{self, SendParams};
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut sw) = tokio::io::split(server_stream);
+
+    let sender_kp = Keypair::generate();
+    let receiver_kp = Keypair::generate();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+    let sender_pub = sender_kp.public_key();
+    let receiver_pub = receiver_kp.public_key();
+
+    // Send message
+    let msg_id = messaging::send_message(
+        &mut cw,
+        &sender_kp,
+        SendParams {
+            from: &from,
+            to: &[to.clone()],
+            sequence: 1,
+            body: Some(json!({"task": "hello"})),
+            thread_id: Some("t1".into()),
+            reply_to: None,
+            priority: None,
+            content_type: None,
+            ttl: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Receive and verify
+    let envelope = framing::recv_envelope(&mut sr, &sender_pub, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(envelope.msg_type, MessageType::MessageSend);
+    assert_eq!(envelope.thread_id.as_deref(), Some("t1"));
+
+    // Send ack
+    messaging::send_ack(&mut sw, &receiver_kp, &to, &from, &msg_id, 1)
+        .await
+        .unwrap();
+
+    // Receive ack
+    let ack = framing::recv_envelope(&mut cr, &receiver_pub, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(ack.msg_type, MessageType::MessageAck);
+    let ack_body = ack.body.unwrap();
+    assert_eq!(ack_body["ack_id"].as_str().unwrap(), msg_id.to_string());
+}
+
+// --- Delivery ---
+
+#[test]
+fn delivery_tracker_ack() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let id = Uuid::new_v4();
+    tracker.track(id);
+    assert!(tracker.ack(&id));
+    assert!(!tracker.ack(&id)); // already acked
+}
+
+#[test]
+fn dedup_set_rejects_duplicates() {
+    use toq_core::delivery::DedupSet;
+
+    let mut dedup = DedupSet::new();
+    let id = Uuid::new_v4();
+    assert!(!dedup.is_duplicate(&id));
+    assert!(dedup.is_duplicate(&id));
+}
+
+#[test]
+fn dedup_set_allows_different_ids() {
+    use toq_core::delivery::DedupSet;
+
+    let mut dedup = DedupSet::new();
+    assert!(!dedup.is_duplicate(&Uuid::new_v4()));
+    assert!(!dedup.is_duplicate(&Uuid::new_v4()));
+}
+
+// --- Streaming ---
+
+#[test]
+fn stream_buffer_assemble() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    buf.add_chunk("s1", 2, json!("second"));
+    buf.add_chunk("s1", 1, json!("first"));
+
+    let result = buf.complete("s1", Some(json!("final"))).unwrap();
+    assert_eq!(
+        result,
+        vec![json!("first"), json!("second"), json!("final")]
+    );
+    assert!(!buf.has_stream("s1"));
+}
+
+#[test]
+fn stream_buffer_cancel() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    buf.add_chunk("s1", 1, json!("data"));
+    assert!(buf.has_stream("s1"));
+    buf.cancel("s1");
+    assert!(!buf.has_stream("s1"));
+}
+
+#[tokio::test]
+async fn stream_chunk_and_end() {
+    use toq_core::framing;
+    use toq_core::streaming::{self, ChunkParams};
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut _cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut _sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let pub_key = kp.public_key();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+
+    streaming::send_chunk(
+        &mut cw,
+        &kp,
+        ChunkParams {
+            from: &from,
+            to: &to,
+            stream_id: "s1",
+            data: json!("part1"),
+            sequence: 1,
+            thread_id: None,
+            content_type: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    streaming::send_end(
+        &mut cw,
+        &kp,
+        &from,
+        &to,
+        "s1",
+        Some(json!("part2")),
+        2,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let chunk = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(chunk.msg_type, MessageType::StreamChunk);
+
+    let end = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(end.msg_type, MessageType::StreamEnd);
+}
+
 #[tokio::test]
 async fn send_and_receive_heartbeat() {
     use toq_core::connection;
