@@ -93,10 +93,12 @@ where
 }
 
 /// Receiver side: verify magic bytes + initiator credentials, send receiver credentials.
+/// If blocked_keys is provided, rejects initiators whose key is in the set.
 pub async fn accept<S>(
     stream: &mut S,
     keypair: &Keypair,
     address: &Address,
+    blocked_keys: Option<&std::collections::HashSet<[u8; 32]>>,
 ) -> Result<HandshakeResult, Error>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -122,6 +124,11 @@ where
         .decode(&init_creds.challenge)
         .map_err(|e| Error::Io(e.to_string()))?;
     peer_key.verify(&init_challenge_bytes, &init_creds.challenge_signature)?;
+
+    // Check blocklist before revealing our identity
+    if blocked_keys.is_some_and(|blocked| blocked.contains(peer_key.as_bytes())) {
+        return Err(Error::InvalidEnvelope("blocked".into()));
+    }
 
     // Step 3: send receiver credentials
     let (challenge_bytes, challenge_b64) = generate_challenge();

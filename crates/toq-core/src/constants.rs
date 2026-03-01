@@ -84,6 +84,21 @@ pub const DEFAULT_MESSAGE_QUEUE_DEPTH: usize = 10000;
 /// Key rotation grace period.
 pub const KEY_ROTATION_GRACE_PERIOD: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// Recommended key rotation interval.
+pub const KEY_ROTATION_RECOMMENDED_DAYS: u32 = 90;
+
+/// Default thread inactivity cleanup period.
+pub const THREAD_CLEANUP_DAYS: u32 = 30;
+
+/// Default log retention period.
+pub const LOG_RETENTION_DAYS: u32 = 30;
+
+/// Default maximum log size in MB.
+pub const LOG_MAX_SIZE_MB: u32 = 500;
+
+/// Health check timeout for local agent adapter.
+pub const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// DNS service prefix for toq TXT record queries.
 pub const DNS_SERVICE_PREFIX: &str = "_toq._tcp.";
 

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::constants::*;
 use crate::error::Error;
 
 /// toq configuration, loaded from `~/.toq/config.toml`.
@@ -31,35 +32,59 @@ pub struct Config {
     pub thread_cleanup_days: u32,
     pub mdns_enabled: bool,
     pub adapter: String,
+    #[serde(rename = "adapter.http", skip_serializing_if = "Option::is_none")]
+    pub adapter_http: Option<HttpAdapterConfig>,
+    #[serde(rename = "adapter.grpc", skip_serializing_if = "Option::is_none")]
+    pub adapter_grpc: Option<GrpcAdapterConfig>,
+    #[serde(rename = "adapter.unix", skip_serializing_if = "Option::is_none")]
+    pub adapter_unix: Option<UnixAdapterConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpAdapterConfig {
+    pub callback_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrpcAdapterConfig {
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnixAdapterConfig {
+    pub socket_path: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             agent_name: "agent".into(),
-            port: 9009,
+            port: DEFAULT_PORT,
             connection_mode: "approval".into(),
             verbosity: "non-technical".into(),
             log_level: "warn".into(),
             accept_files: false,
             max_file_size: 10_485_760,
-            max_message_size: 1_048_576,
-            max_connections: 1000,
-            max_threads_per_connection: 100,
-            max_message_queue: 10000,
-            max_pending_approvals: 100,
-            handshake_timeout: 5,
-            negotiation_timeout: 5,
-            ack_timeout: 10,
-            heartbeat_interval: 30,
-            heartbeat_timeout: 90,
-            session_resume_timeout: 300,
-            graceful_shutdown_timeout: 60,
-            log_retention_days: 30,
-            log_max_size_mb: 500,
-            thread_cleanup_days: 30,
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_threads_per_connection: DEFAULT_MAX_THREADS_PER_CONNECTION,
+            max_message_queue: DEFAULT_MESSAGE_QUEUE_DEPTH,
+            max_pending_approvals: MAX_PENDING_APPROVALS,
+            handshake_timeout: HANDSHAKE_TIMEOUT.as_secs(),
+            negotiation_timeout: NEGOTIATION_TIMEOUT.as_secs(),
+            ack_timeout: ACK_TIMEOUT.as_secs(),
+            heartbeat_interval: HEARTBEAT_INTERVAL.as_secs(),
+            heartbeat_timeout: HEARTBEAT_TIMEOUT.as_secs(),
+            session_resume_timeout: SESSION_RESUME_TIMEOUT.as_secs(),
+            graceful_shutdown_timeout: GRACEFUL_SHUTDOWN_TIMEOUT.as_secs(),
+            log_retention_days: LOG_RETENTION_DAYS,
+            log_max_size_mb: LOG_MAX_SIZE_MB,
+            thread_cleanup_days: THREAD_CLEANUP_DAYS,
             mdns_enabled: false,
             adapter: "http".into(),
+            adapter_http: None,
+            adapter_grpc: None,
+            adapter_unix: None,
         }
     }
 }

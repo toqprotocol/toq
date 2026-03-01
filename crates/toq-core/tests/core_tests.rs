@@ -284,7 +284,7 @@ async fn handshake_initiate_accept() {
         },
         async {
             let mut stream = tokio::io::join(&mut server_read, &mut server_write);
-            handshake::accept(&mut stream, &server_kp, &server_addr).await
+            handshake::accept(&mut stream, &server_kp, &server_addr, None).await
         }
     );
 

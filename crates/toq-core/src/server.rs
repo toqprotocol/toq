@@ -48,7 +48,7 @@ pub async fn accept_connection(
     // Handshake (with timeout)
     let hs = timeout(
         HANDSHAKE_TIMEOUT,
-        handshake::accept(&mut tls_stream, keypair, address),
+        handshake::accept(&mut tls_stream, keypair, address, None),
     )
     .await
     .map_err(|_| Error::Io("handshake timeout".into()))??;

@@ -103,6 +103,24 @@ impl Envelope {
         Ok(())
     }
 
+    /// Validate that compression usage matches negotiated features.
+    pub fn validate_compression(&self, compression_negotiated: bool) -> Result<(), Error> {
+        if self.compression.is_some() && !compression_negotiated {
+            return Err(Error::InvalidEnvelope(
+                "compression used but not negotiated".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate that the id is a UUID v4.
+    pub fn validate_id(&self) -> Result<(), Error> {
+        if self.id.get_version() != Some(uuid::Version::Random) {
+            return Err(Error::InvalidEnvelope("id must be a UUID v4".into()));
+        }
+        Ok(())
+    }
+
     /// Check that none of the recipients match the sender.
     pub fn check_self_message(&self) -> Result<(), Error> {
         let from_str = self.from.to_string();
