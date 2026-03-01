@@ -22,6 +22,9 @@ pub fn server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
 ) -> Result<Arc<ServerConfig>, Error> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
@@ -32,6 +35,9 @@ pub fn server_config(
 /// Build a rustls ClientConfig that skips certificate verification.
 /// Identity is verified at the toq protocol layer via Ed25519 keys, not TLS certs.
 pub fn client_config() -> Arc<ClientConfig> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoVerifier))

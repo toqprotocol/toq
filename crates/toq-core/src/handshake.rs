@@ -1,16 +1,13 @@
 use base64::prelude::*;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
+use crate::constants::{MAGIC_BYTES, MAX_HANDSHAKE_PAYLOAD, PROTOCOL_VERSION};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
 use crate::types::Address;
-
-pub const MAGIC_BYTES: [u8; 4] = [0x54, 0x4F, 0x51, 0x01];
-pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct HandshakeResult {
@@ -68,7 +65,7 @@ where
         challenge: challenge_b64,
         challenge_signature: keypair.sign(&challenge_bytes),
         address: address.clone(),
-        protocol_version: "0.1".into(),
+        protocol_version: PROTOCOL_VERSION.into(),
         rotation_proof: None,
     };
     write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
@@ -169,7 +166,7 @@ where
         .await
         .map_err(|e| Error::Crypto(e.to_string()))?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 65536 {
+    if len > MAX_HANDSHAKE_PAYLOAD {
         return Err(Error::InvalidEnvelope("handshake payload too large".into()));
     }
     let mut buf = vec![0u8; len];

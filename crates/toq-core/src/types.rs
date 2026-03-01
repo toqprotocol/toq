@@ -2,9 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
+use crate::constants::DEFAULT_PORT;
 use crate::error::Error;
-
-pub const DEFAULT_PORT: u16 = 9009;
 
 // --- Address ---
 

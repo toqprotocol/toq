@@ -2,19 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::constants::{
+    BLOCKED_CONTENT_TYPES, DEFAULT_MAX_MESSAGE_SIZE, MAX_RECIPIENTS, PROTOCOL_VERSION,
+};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
 use crate::types::{Address, MessageType, Priority};
-
-pub const DEFAULT_MAX_SIZE: usize = 1_048_576; // 1 MB
-
-const BLOCKED_CONTENT_TYPES: &[&str] = &[
-    "application/x-executable",
-    "application/x-msdos-program",
-    "application/x-msdownload",
-    "application/x-sharedlib",
-    "application/vnd.microsoft.portable-executable",
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
@@ -71,7 +64,7 @@ impl Envelope {
 
     /// Validate envelope fields per spec Section 4.3.
     pub fn validate(&self) -> Result<(), Error> {
-        if self.version != "0.1" {
+        if self.version != PROTOCOL_VERSION {
             return Err(Error::InvalidEnvelope("unsupported version".into()));
         }
         if self.to.is_empty() {
@@ -79,7 +72,7 @@ impl Envelope {
                 "to must have at least one recipient".into(),
             ));
         }
-        if self.to.len() > 100 {
+        if self.to.len() > MAX_RECIPIENTS {
             return Err(Error::InvalidEnvelope(
                 "to must have at most 100 recipients".into(),
             ));
@@ -88,10 +81,10 @@ impl Envelope {
             check_content_type(ct)?;
         }
         let size = serde_json::to_vec(self)?.len();
-        if size > DEFAULT_MAX_SIZE {
+        if size > DEFAULT_MAX_MESSAGE_SIZE {
             return Err(Error::MessageTooLarge {
                 size,
-                max: DEFAULT_MAX_SIZE,
+                max: DEFAULT_MAX_MESSAGE_SIZE,
             });
         }
         Ok(())

@@ -3,10 +3,8 @@ use ed25519_dalek::{Signer, Verifier};
 use rand::rngs::OsRng;
 use std::fmt;
 
+use crate::constants::ED25519_PREFIX;
 use crate::error::Error;
-
-const KEY_PREFIX: &str = "ed25519:";
-const SIGNATURE_PREFIX: &str = "ed25519:";
 
 pub struct Keypair {
     signing_key: ed25519_dalek::SigningKey,
@@ -27,7 +25,7 @@ impl Keypair {
         let sig = self.signing_key.sign(data);
         format!(
             "{}{}",
-            SIGNATURE_PREFIX,
+            ED25519_PREFIX,
             BASE64_STANDARD.encode(sig.to_bytes())
         )
     }
@@ -39,7 +37,7 @@ pub struct PublicKey(ed25519_dalek::VerifyingKey);
 impl PublicKey {
     pub fn verify(&self, data: &[u8], signature: &str) -> Result<(), Error> {
         let encoded = signature
-            .strip_prefix(SIGNATURE_PREFIX)
+            .strip_prefix(ED25519_PREFIX)
             .ok_or_else(|| Error::Crypto("signature must start with ed25519:".into()))?;
 
         let bytes = BASE64_STANDARD
@@ -60,7 +58,7 @@ impl PublicKey {
 
     pub fn from_encoded(s: &str) -> Result<Self, Error> {
         let encoded = s
-            .strip_prefix(KEY_PREFIX)
+            .strip_prefix(ED25519_PREFIX)
             .ok_or_else(|| Error::Crypto("public key must start with ed25519:".into()))?;
         let bytes = BASE64_STANDARD
             .decode(encoded)
@@ -78,7 +76,7 @@ impl PublicKey {
     pub fn to_encoded(&self) -> String {
         format!(
             "{}{}",
-            KEY_PREFIX,
+            ED25519_PREFIX,
             BASE64_STANDARD.encode(self.0.as_bytes())
         )
     }

@@ -18,3 +18,6 @@ tokio = { version = "1", features = ["net", "io-util", "time"] }
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rcgen = "0.13"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
