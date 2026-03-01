@@ -24,6 +24,24 @@ pub const MAX_HANDSHAKE_PAYLOAD: usize = 65536;
 /// Handshake timeout.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Negotiation timeout.
+pub const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Heartbeat interval.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Heartbeat timeout (3 missed beats).
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Maximum agent card size in bytes (64 KB).
+pub const MAX_CARD_SIZE: usize = 65536;
+
+/// Session resume window.
+pub const SESSION_RESUME_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Graceful shutdown timeout.
+pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// MIME types that MUST be rejected by the toq process.
 pub const BLOCKED_CONTENT_TYPES: &[&str] = &[
     "application/x-executable",

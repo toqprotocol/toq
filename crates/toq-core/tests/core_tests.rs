@@ -319,3 +319,244 @@ fn server_config_from_self_signed() {
     let config = toq_core::transport::server_config(certs, key);
     assert!(config.is_ok());
 }
+
+// --- Negotiation ---
+
+#[tokio::test]
+async fn negotiation_request_respond() {
+    use toq_core::negotiation::{self, Features};
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut sw) = tokio::io::split(server_stream);
+
+    let client_kp = Keypair::generate();
+    let server_kp = Keypair::generate();
+    let client_addr = Address::new("alice.dev", "assistant").unwrap();
+    let server_addr = Address::new("bob.dev", "agent").unwrap();
+    let client_pub = client_kp.public_key();
+    let server_pub = server_kp.public_key();
+
+    let features = Features::default();
+
+    let (client_result, server_result) = tokio::join!(
+        async {
+            let mut stream = tokio::io::join(&mut cr, &mut cw);
+            negotiation::request(
+                &mut stream,
+                &client_kp,
+                &server_pub,
+                &client_addr,
+                &server_addr,
+                &features,
+            )
+            .await
+        },
+        async {
+            let mut stream = tokio::io::join(&mut sr, &mut sw);
+            negotiation::respond(
+                &mut stream,
+                &server_kp,
+                &client_pub,
+                &server_addr,
+                &client_addr,
+                &features,
+            )
+            .await
+        }
+    );
+
+    let client_result = client_result.unwrap();
+    let server_result = server_result.unwrap();
+
+    assert_eq!(client_result.version, PROTOCOL_VERSION);
+    assert_eq!(server_result.version, PROTOCOL_VERSION);
+    assert_eq!(client_result.streaming, server_result.streaming);
+}
+
+// --- Agent Card ---
+
+#[tokio::test]
+async fn card_exchange_roundtrip() {
+    use toq_core::card::{self, AgentCard};
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut sw) = tokio::io::split(server_stream);
+
+    let client_kp = Keypair::generate();
+    let server_kp = Keypair::generate();
+    let client_addr = Address::new("alice.dev", "assistant").unwrap();
+    let server_addr = Address::new("bob.dev", "agent").unwrap();
+    let client_pub = client_kp.public_key();
+    let server_pub = server_kp.public_key();
+
+    let client_card = AgentCard {
+        name: "Alice".into(),
+        description: None,
+        public_key: client_kp.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: None,
+    };
+    let server_card = AgentCard {
+        name: "Bob".into(),
+        description: None,
+        public_key: server_kp.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec!["search".into()],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: Some("approval".into()),
+    };
+
+    let (got_server_card, got_client_card) = tokio::join!(
+        async {
+            let mut stream = tokio::io::join(&mut cr, &mut cw);
+            card::exchange(
+                &mut stream,
+                &client_kp,
+                &server_pub,
+                &client_addr,
+                &server_addr,
+                &client_card,
+                1,
+            )
+            .await
+        },
+        async {
+            let mut stream = tokio::io::join(&mut sr, &mut sw);
+            card::exchange(
+                &mut stream,
+                &server_kp,
+                &client_pub,
+                &server_addr,
+                &client_addr,
+                &server_card,
+                1,
+            )
+            .await
+        }
+    );
+
+    let got_server_card = got_server_card.unwrap();
+    let got_client_card = got_client_card.unwrap();
+
+    assert_eq!(got_server_card.name, "Bob");
+    assert_eq!(got_server_card.capabilities, vec!["search"]);
+    assert_eq!(got_client_card.name, "Alice");
+}
+
+#[test]
+fn card_validate_key_mismatch() {
+    use toq_core::card::AgentCard;
+
+    let kp1 = Keypair::generate();
+    let kp2 = Keypair::generate();
+    let card = AgentCard {
+        name: "Test".into(),
+        description: None,
+        public_key: kp1.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: None,
+    };
+    assert!(card.validate(&kp2.public_key()).is_err());
+}
+
+#[test]
+fn card_validate_empty_name() {
+    use toq_core::card::AgentCard;
+
+    let kp = Keypair::generate();
+    let card = AgentCard {
+        name: "".into(),
+        description: None,
+        public_key: kp.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: None,
+    };
+    assert!(card.validate(&kp.public_key()).is_err());
+}
+
+// --- Connection ---
+
+#[test]
+fn connection_state_values() {
+    use toq_core::connection::ConnectionState;
+
+    assert_ne!(ConnectionState::Active, ConnectionState::Closed);
+    assert_eq!(ConnectionState::Active, ConnectionState::Active);
+}
+
+#[tokio::test]
+async fn send_and_receive_heartbeat() {
+    use toq_core::connection;
+    use toq_core::framing;
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let peer_kp = Keypair::generate();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+    let peer_pub = kp.public_key();
+
+    let hb_id = connection::send_heartbeat(&mut cw, &kp, &from, &to, 10)
+        .await
+        .unwrap();
+
+    let envelope = framing::recv_envelope(&mut sr, &peer_pub, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(envelope.msg_type, MessageType::Heartbeat);
+    assert_eq!(envelope.id, hb_id);
+
+    connection::send_heartbeat_ack(&mut sw, &peer_kp, &to, &from, &hb_id, 10)
+        .await
+        .unwrap();
+
+    let ack = framing::recv_envelope(&mut cr, &peer_kp.public_key(), 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(ack.msg_type, MessageType::HeartbeatAck);
+    assert_eq!(ack.reply_to.unwrap(), hb_id.to_string());
+}
+
+#[tokio::test]
+async fn send_disconnect() {
+    use toq_core::connection;
+    use toq_core::framing;
+
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let (mut _cr, mut cw) = tokio::io::split(client_stream);
+    let (mut sr, mut _sw) = tokio::io::split(server_stream);
+
+    let kp = Keypair::generate();
+    let from = Address::new("alice.dev", "assistant").unwrap();
+    let to = Address::new("bob.dev", "agent").unwrap();
+    let pub_key = kp.public_key();
+
+    connection::send_disconnect(&mut cw, &kp, &from, &to, 99)
+        .await
+        .unwrap();
+
+    let envelope = framing::recv_envelope(&mut sr, &pub_key, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(envelope.msg_type, MessageType::SessionDisconnect);
+    assert_eq!(envelope.sequence, 99);
+}

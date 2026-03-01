@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::constants::{MAGIC_BYTES, MAX_HANDSHAKE_PAYLOAD, PROTOCOL_VERSION};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
+use crate::framing;
 use crate::types::Address;
 
 #[derive(Debug)]
@@ -68,10 +69,10 @@ where
         protocol_version: PROTOCOL_VERSION.into(),
         rotation_proof: None,
     };
-    write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
+    framing::write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
 
     // Step 3: receive receiver credentials
-    let data = read_length_prefixed(stream).await?;
+    let data = framing::read_length_prefixed(stream, MAX_HANDSHAKE_PAYLOAD).await?;
     let recv_creds: ReceiverCredentials =
         serde_json::from_slice(&data).map_err(|e| Error::InvalidEnvelope(e.to_string()))?;
 
@@ -109,7 +110,7 @@ where
     }
 
     // Step 2: receive initiator credentials
-    let data = read_length_prefixed(stream).await?;
+    let data = framing::read_length_prefixed(stream, MAX_HANDSHAKE_PAYLOAD).await?;
     let init_creds: InitiatorCredentials =
         serde_json::from_slice(&data).map_err(|e| Error::InvalidEnvelope(e.to_string()))?;
 
@@ -131,48 +132,11 @@ where
         session_id: session_id.clone(),
         rotation_proof: None,
     };
-    write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
+    framing::write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
 
     Ok(HandshakeResult {
         peer_public_key: peer_key,
         peer_address: init_creds.address,
         session_id,
     })
-}
-
-async fn write_length_prefixed<S>(stream: &mut S, data: &[u8]) -> Result<(), Error>
-where
-    S: AsyncWriteExt + Unpin,
-{
-    let len = (data.len() as u32).to_be_bytes();
-    stream
-        .write_all(&len)
-        .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
-    stream
-        .write_all(data)
-        .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
-    Ok(())
-}
-
-async fn read_length_prefixed<S>(stream: &mut S) -> Result<Vec<u8>, Error>
-where
-    S: AsyncReadExt + Unpin,
-{
-    let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
-        .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_HANDSHAKE_PAYLOAD {
-        return Err(Error::InvalidEnvelope("handshake payload too large".into()));
-    }
-    let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .map_err(|e| Error::Crypto(e.to_string()))?;
-    Ok(buf)
 }
