@@ -3,6 +3,7 @@ pub mod connection;
 pub mod constants;
 pub mod crypto;
 pub mod delivery;
+pub mod discovery;
 pub mod envelope;
 pub mod error;
 pub mod framing;

@@ -623,9 +623,7 @@ fn sequence_tracker_reset() {
     assert!(tracker.check(3)); // above reset
 }
 
-// --- Key Rotation ---
-
-#[test]
+// --- Key Rotation ---#[test]
 fn key_rotation_proof() {
     use toq_core::crypto::{generate_rotation_proof, verify_rotation_proof};
 
@@ -880,4 +878,80 @@ async fn send_disconnect() {
         .unwrap();
     assert_eq!(envelope.msg_type, MessageType::SessionDisconnect);
     assert_eq!(envelope.sequence, 99);
+}
+
+// --- Discovery ---
+
+#[test]
+fn parse_txt_record_full() {
+    use toq_core::discovery;
+
+    let record =
+        discovery::parse_txt_record("v=toq1; key=MCowBQYDK2VwAyEA; port=9009; agent=assistant")
+            .unwrap();
+    assert_eq!(record.agent_name, "assistant");
+    assert_eq!(record.public_key_b64, "MCowBQYDK2VwAyEA");
+    assert_eq!(record.port, DEFAULT_PORT);
+}
+
+#[test]
+fn parse_txt_record_default_port() {
+    use toq_core::discovery;
+
+    let record = discovery::parse_txt_record("v=toq1; key=abc123; agent=helper").unwrap();
+    assert_eq!(record.port, DEFAULT_PORT);
+    assert_eq!(record.agent_name, "helper");
+}
+
+#[test]
+fn parse_txt_record_custom_port() {
+    use toq_core::discovery;
+
+    let record = discovery::parse_txt_record("v=toq1; key=abc; port=7070; agent=bot").unwrap();
+    assert_eq!(record.port, 7070);
+}
+
+#[test]
+fn parse_txt_record_wrong_version() {
+    use toq_core::discovery;
+
+    assert!(discovery::parse_txt_record("v=toq2; key=abc; agent=bot").is_err());
+}
+
+#[test]
+fn parse_txt_record_missing_key() {
+    use toq_core::discovery;
+
+    assert!(discovery::parse_txt_record("v=toq1; agent=bot").is_err());
+}
+
+#[test]
+fn parse_txt_record_missing_agent() {
+    use toq_core::discovery;
+
+    assert!(discovery::parse_txt_record("v=toq1; key=abc").is_err());
+}
+
+#[test]
+fn query_name_format() {
+    use toq_core::discovery;
+
+    assert_eq!(
+        discovery::query_name("example.com"),
+        "_toq._tcp.example.com"
+    );
+}
+
+#[test]
+fn to_discovered_agent() {
+    use toq_core::discovery;
+
+    let record =
+        discovery::parse_txt_record("v=toq1; key=abc; port=7070; agent=assistant").unwrap();
+    let agent = discovery::to_discovered_agent("example.com", &record).unwrap();
+    assert_eq!(
+        agent.address.to_string(),
+        "toq://example.com:7070/assistant"
+    );
+    assert_eq!(agent.public_key_b64, "abc");
 }

@@ -63,6 +63,18 @@ pub const DEDUP_WINDOW: Duration = Duration::from_secs(300);
 /// Maximum pending approval requests.
 pub const MAX_PENDING_APPROVALS: usize = 100;
 
+/// DNS service prefix for toq TXT record queries.
+pub const DNS_SERVICE_PREFIX: &str = "_toq._tcp.";
+
+/// Protocol identifier in DNS TXT records.
+pub const DNS_PROTOCOL_ID: &str = "toq1";
+
+/// Recommended DNS TTL in seconds.
+pub const DNS_RECOMMENDED_TTL: u32 = 300;
+
+/// mDNS service type for local discovery.
+pub const MDNS_SERVICE_TYPE: &str = "_toq._tcp.local.";
+
 /// MIME types that MUST be rejected by the toq process.
 pub const BLOCKED_CONTENT_TYPES: &[&str] = &[
     "application/x-executable",
