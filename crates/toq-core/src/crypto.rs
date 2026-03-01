@@ -18,6 +18,19 @@ impl Keypair {
         }
     }
 
+    pub fn from_seed(seed: &[u8]) -> Result<Self, Error> {
+        let bytes: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| Error::Crypto("seed must be 32 bytes".into()))?;
+        Ok(Self {
+            signing_key: ed25519_dalek::SigningKey::from_bytes(&bytes),
+        })
+    }
+
+    pub fn seed_bytes(&self) -> &[u8; 32] {
+        self.signing_key.as_bytes()
+    }
+
     pub fn public_key(&self) -> PublicKey {
         PublicKey(self.signing_key.verifying_key())
     }

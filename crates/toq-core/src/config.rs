@@ -90,6 +90,13 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Create a config with custom agent name and connection mode, defaults for everything else.
+    pub fn with_agent(mut self, name: String, mode: String) -> Self {
+        self.agent_name = name;
+        self.connection_mode = mode;
+        self
+    }
+
     /// Default config file path: `~/.toq/config.toml`
     pub fn default_path() -> PathBuf {
         dirs_path().join("config.toml")

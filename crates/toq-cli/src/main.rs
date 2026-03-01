@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
 use toq_core::card::AgentCard;
 use toq_core::config::Config;
 use toq_core::constants::PROTOCOL_VERSION;
 use toq_core::crypto::Keypair;
+use toq_core::keystore;
 use toq_core::negotiation::Features;
 use toq_core::server;
 use toq_core::transport;
@@ -85,8 +87,8 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Commands::Setup => run_setup(),
         Commands::Up { foreground: _ } => run_up().await,
-        Commands::Setup => stub("setup"),
         Commands::Down { graceful } => {
             if graceful {
                 stub("down --graceful")
@@ -129,13 +131,86 @@ fn stub(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load(&Config::default_path())?;
+fn prompt(question: &str, default: &str) -> String {
+    print!("{question} [{default}]: ");
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
+fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
+    println!("toq setup\n");
+
+    if keystore::is_setup_complete() {
+        println!("Setup already complete. Re-running will overwrite existing keys and config.");
+        let answer = prompt("Continue?", "no");
+        if !answer.starts_with('y') && !answer.starts_with('Y') {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Agent name
+    let agent_name = prompt("Agent name", "agent");
+    Address::new("localhost", &agent_name)?;
+
+    // Connection mode
+    println!("\nWho can connect to your agent?");
+    println!("  1. approval  - You approve each new agent (recommended)");
+    println!("  2. open      - Anyone can connect");
+    println!("  3. allowlist - Only pre-approved agents");
+    let mode_choice = prompt("Choice", "1");
+    let connection_mode = match mode_choice.as_str() {
+        "2" | "open" => "open",
+        "3" | "allowlist" => "allowlist",
+        _ => "approval",
+    };
+
+    // Generate identity keypair
+    println!("\nGenerating Ed25519 identity keypair...");
     let keypair = Keypair::generate();
-    let address = Address::new("localhost", &config.agent_name)?;
+    keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
+    println!("  Saved to {}", keystore::identity_key_path().display());
 
-    let (certs, key) = transport::generate_self_signed_cert()?;
+    // Generate TLS certificate
+    println!("Generating self-signed TLS certificate...");
+    keystore::generate_and_save_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
+    println!("  Saved to {}", keystore::tls_cert_path().display());
+
+    // Create config
+    let config = Config::default().with_agent(agent_name.clone(), connection_mode.to_string());
+    config.save(&Config::default_path())?;
+    println!("Config saved to {}", Config::default_path().display());
+
+    // Summary
+    println!("\n--- Setup complete ---");
+    println!("  Agent name:      {agent_name}");
+    println!("  Public key:      {}", keypair.public_key());
+    println!("  Connection mode: {connection_mode}");
+    println!("  Address:         toq://localhost/{agent_name}");
+    println!("\nRun `toq up` to start your endpoint.");
+
+    Ok(())
+}
+
+async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
+    if !keystore::is_setup_complete() {
+        eprintln!("Setup not complete. Run `toq setup` first.");
+        std::process::exit(1);
+    }
+
+    let config = Config::load(&Config::default_path())?;
+    let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
+    let (certs, key) =
+        keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
+
+    let address = Address::new("localhost", &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
 
@@ -159,7 +234,9 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = format!("0.0.0.0:{}", config.port);
     let listener = server::bind(&bind_addr).await?;
     println!("toq up on {address}");
-    println!("listening on {bind_addr}");
+    println!("  public key: {}", keypair.public_key());
+    println!("  listening on {bind_addr}");
+    println!("  connection mode: {}", config.connection_mode);
 
     loop {
         tokio::select! {

@@ -99,6 +99,24 @@ pub const LOG_MAX_SIZE_MB: u32 = 500;
 /// Health check timeout for local agent adapter.
 pub const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Subdirectory for key storage within ~/.toq/.
+pub const KEYS_DIR: &str = "keys";
+
+/// Filename for the Ed25519 identity key.
+pub const IDENTITY_KEY_FILE: &str = "identity.key";
+
+/// Filename for the TLS certificate PEM.
+pub const TLS_CERT_FILE: &str = "tls_cert.pem";
+
+/// Filename for the TLS private key PEM.
+pub const TLS_KEY_FILE: &str = "tls_key.pem";
+
+/// Filename for the peer store.
+pub const PEERS_FILE: &str = "peers.json";
+
+/// Default SAN for self-signed TLS certificates.
+pub const TLS_SELF_SIGNED_SAN: &str = "localhost";
+
 /// DNS service prefix for toq TXT record queries.
 pub const DNS_SERVICE_PREFIX: &str = "_toq._tcp.";
 

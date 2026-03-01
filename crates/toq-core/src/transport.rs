@@ -10,8 +10,9 @@ use crate::error::Error;
 /// Generate a self-signed TLS certificate for the toq endpoint.
 pub fn generate_self_signed_cert()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), Error> {
-    let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+    let certified_key =
+        rcgen::generate_simple_self_signed(vec![crate::constants::TLS_SELF_SIGNED_SAN.into()])
+            .map_err(|e| Error::Crypto(e.to_string()))?;
     let cert_der = CertificateDer::from(certified_key.cert);
     let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
         certified_key.key_pair.serialize_der(),
@@ -111,7 +112,7 @@ pub async fn tls_connect(
     config: Arc<ClientConfig>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Error> {
     let connector = TlsConnector::from(config);
-    let server_name = ServerName::try_from("localhost")
+    let server_name = ServerName::try_from(crate::constants::TLS_SELF_SIGNED_SAN)
         .map_err(|e| Error::Io(e.to_string()))?
         .to_owned();
     connector
