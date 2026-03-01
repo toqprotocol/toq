@@ -77,7 +77,7 @@ where
         thread_id: None,
         reply_to: None,
         sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -105,8 +105,4 @@ where
     peer_card.validate(peer_key)?;
 
     Ok(peer_card)
-}
-
-fn now_utc() -> String {
-    "2026-01-01T00:00:00Z".to_string()
 }

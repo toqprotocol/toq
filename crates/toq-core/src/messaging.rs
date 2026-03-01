@@ -41,7 +41,7 @@ where
         thread_id: params.thread_id,
         reply_to: params.reply_to,
         sequence: params.sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: params.priority,
         content_type: params.content_type,
         ttl: params.ttl,
@@ -75,7 +75,7 @@ where
         thread_id: None,
         reply_to: None,
         sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -108,7 +108,7 @@ where
         thread_id: None,
         reply_to: None,
         sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -118,8 +118,4 @@ where
         body: Some(serde_json::json!({ "cancel_id": cancel_id.to_string() })),
     };
     framing::send_envelope(stream, &mut envelope, keypair).await
-}
-
-fn now_utc() -> String {
-    "2026-01-01T00:00:00Z".to_string()
 }

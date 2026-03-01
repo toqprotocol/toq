@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::constants::MAX_PENDING_APPROVALS;
 use crate::crypto::PublicKey;
 
-/// Connection mode per spec Section 16.
+/// Connection mode.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConnectionMode {
     Open,

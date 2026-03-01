@@ -40,7 +40,7 @@ where
         thread_id: params.thread_id,
         reply_to: None,
         sequence: params.sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: params.content_type,
         ttl: None,
@@ -84,7 +84,7 @@ where
         thread_id,
         reply_to: None,
         sequence,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -144,8 +144,4 @@ impl Default for StreamBuffer {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn now_utc() -> String {
-    "2026-01-01T00:00:00Z".to_string()
 }

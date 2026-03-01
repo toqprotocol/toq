@@ -1,4 +1,4 @@
-/// Per-connection sequence counter for replay prevention (spec Section 17.1).
+/// Per-connection sequence counter for replay prevention.
 /// Rejects any envelope with a sequence number <= the highest seen.
 pub struct SequenceTracker {
     highest_seen: Option<u64>,

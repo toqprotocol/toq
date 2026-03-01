@@ -72,3 +72,24 @@ where
     envelope.verify(peer_key)?;
     Ok(envelope)
 }
+
+/// Receive, verify, and check replay prevention on an envelope.
+pub async fn recv_envelope_checked<S>(
+    stream: &mut S,
+    peer_key: &PublicKey,
+    max_size: usize,
+    sequence_tracker: &mut crate::replay::SequenceTracker,
+    dedup: &mut crate::delivery::DedupSet,
+) -> Result<Envelope, Error>
+where
+    S: AsyncReadExt + Unpin,
+{
+    let envelope = recv_envelope(stream, peer_key, max_size).await?;
+    if !sequence_tracker.check(envelope.sequence) {
+        return Err(Error::InvalidEnvelope("sequence violation".into()));
+    }
+    if dedup.is_duplicate(&envelope.id) {
+        return Err(Error::InvalidEnvelope("duplicate message".into()));
+    }
+    Ok(envelope)
+}

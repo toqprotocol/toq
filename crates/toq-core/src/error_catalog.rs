@@ -9,7 +9,7 @@ pub enum Severity {
     Silent,
 }
 
-/// All 22 protocol error codes per spec Section 23.
+/// All 22 protocol error codes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorCode {
     #[serde(rename = "invalid_signature")]

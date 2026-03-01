@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Adapter types for local agent communication (spec Section 27.1).
+/// Adapter types for local agent communication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdapterType {
@@ -12,7 +12,7 @@ pub enum AdapterType {
     Grpc,
 }
 
-/// Message delivered to the local agent (spec Section 27.2).
+/// Message delivered to the local agent.
 /// Protocol-internal fields (sequence, signature, version) are stripped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {

@@ -59,7 +59,7 @@ where
         thread_id: None,
         reply_to: None,
         sequence: 0,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -141,7 +141,7 @@ where
             thread_id: None,
             reply_to: None,
             sequence: 0,
-            timestamp: now_utc(),
+            timestamp: crate::now_utc(),
             priority: None,
             content_type: None,
             ttl: None,
@@ -184,7 +184,7 @@ where
         thread_id: None,
         reply_to: None,
         sequence: 0,
-        timestamp: now_utc(),
+        timestamp: crate::now_utc(),
         priority: None,
         content_type: None,
         ttl: None,
@@ -203,9 +203,4 @@ where
     framing::send_envelope(stream, &mut response, keypair).await?;
 
     Ok(negotiated)
-}
-
-fn now_utc() -> String {
-    // Simple UTC timestamp. A proper implementation would use chrono or time crate.
-    "2026-01-01T00:00:00Z".to_string()
 }

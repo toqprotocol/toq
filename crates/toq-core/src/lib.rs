@@ -20,3 +20,10 @@ pub mod server;
 pub mod streaming;
 pub mod transport;
 pub mod types;
+
+/// Generate an ISO 8601 UTC timestamp for the current time.
+pub fn now_utc() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}

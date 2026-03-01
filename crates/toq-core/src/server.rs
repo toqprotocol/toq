@@ -1,12 +1,15 @@
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
 use crate::card::{self, AgentCard};
 use crate::connection::ConnectionState;
+use crate::constants::{HANDSHAKE_TIMEOUT, NEGOTIATION_TIMEOUT};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
 use crate::handshake;
 use crate::negotiation::{self, Features, NegotiatedFeatures};
+use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::transport;
 use crate::types::Address;
 
@@ -29,7 +32,7 @@ pub async fn bind(addr: &str) -> Result<TcpListener, Error> {
 }
 
 /// Run the full server-side protocol flow on an accepted TCP connection:
-/// TLS → handshake → negotiation → card exchange → ACTIVE.
+/// TLS → handshake → policy check → negotiation → card exchange → ACTIVE.
 pub async fn accept_connection(
     tcp: TcpStream,
     tls_acceptor: &TlsAcceptor,
@@ -37,23 +40,48 @@ pub async fn accept_connection(
     address: &Address,
     local_card: &AgentCard,
     local_features: &Features,
+    policy: Option<&PolicyEngine>,
 ) -> Result<EstablishedConnection, Error> {
     // TLS
     let mut tls_stream = transport::tls_accept(tls_acceptor, tcp).await?;
 
-    // Handshake
-    let hs = handshake::accept(&mut tls_stream, keypair, address).await?;
-
-    // Negotiation
-    let features = negotiation::respond(
-        &mut tls_stream,
-        keypair,
-        &hs.peer_public_key,
-        address,
-        &hs.peer_address,
-        local_features,
+    // Handshake (with timeout)
+    let hs = timeout(
+        HANDSHAKE_TIMEOUT,
+        handshake::accept(&mut tls_stream, keypair, address),
     )
-    .await?;
+    .await
+    .map_err(|_| Error::Crypto("handshake timeout".into()))??;
+
+    // Policy check
+    if let Some(engine) = policy {
+        match engine.check(&hs.peer_public_key) {
+            PolicyDecision::Accept => {}
+            PolicyDecision::Reject => {
+                return Err(Error::InvalidEnvelope(
+                    "connection rejected by policy".into(),
+                ));
+            }
+            PolicyDecision::PendingApproval => {
+                return Err(Error::InvalidEnvelope("connection pending approval".into()));
+            }
+        }
+    }
+
+    // Negotiation (with timeout)
+    let features = timeout(
+        NEGOTIATION_TIMEOUT,
+        negotiation::respond(
+            &mut tls_stream,
+            keypair,
+            &hs.peer_public_key,
+            address,
+            &hs.peer_address,
+            local_features,
+        ),
+    )
+    .await
+    .map_err(|_| Error::Crypto("negotiation timeout".into()))??;
 
     // Card exchange
     let peer_card = card::exchange(
@@ -93,19 +121,28 @@ pub async fn connect_to_peer(
     let client_cfg = transport::client_config();
     let mut tls_stream = transport::tls_connect(tcp, client_cfg).await?;
 
-    // Handshake
-    let hs = handshake::initiate(&mut tls_stream, keypair, address).await?;
-
-    // Negotiation
-    let features = negotiation::request(
-        &mut tls_stream,
-        keypair,
-        &hs.peer_public_key,
-        address,
-        &hs.peer_address,
-        local_features,
+    // Handshake (with timeout)
+    let hs = timeout(
+        HANDSHAKE_TIMEOUT,
+        handshake::initiate(&mut tls_stream, keypair, address),
     )
-    .await?;
+    .await
+    .map_err(|_| Error::Crypto("handshake timeout".into()))??;
+
+    // Negotiation (with timeout)
+    let features = timeout(
+        NEGOTIATION_TIMEOUT,
+        negotiation::request(
+            &mut tls_stream,
+            keypair,
+            &hs.peer_public_key,
+            address,
+            &hs.peer_address,
+            local_features,
+        ),
+    )
+    .await
+    .map_err(|_| Error::Crypto("negotiation timeout".into()))??;
 
     // Card exchange
     let peer_card = card::exchange(

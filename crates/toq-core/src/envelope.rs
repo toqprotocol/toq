@@ -62,7 +62,7 @@ impl Envelope {
         public_key.verify(&bytes, &self.signature)
     }
 
-    /// Validate envelope fields per spec Section 4.3.
+    /// Validate envelope fields.
     pub fn validate(&self) -> Result<(), Error> {
         if self.version != PROTOCOL_VERSION {
             return Err(Error::InvalidEnvelope("unsupported version".into()));
@@ -80,12 +80,38 @@ impl Envelope {
         if let Some(ref ct) = self.content_type {
             check_content_type(ct)?;
         }
+        // TTL expiry check
+        if let (Some(ttl), Ok(created)) = (
+            self.ttl,
+            time::OffsetDateTime::parse(
+                &self.timestamp,
+                &time::format_description::well_known::Rfc3339,
+            ),
+        ) {
+            let expires = created + time::Duration::seconds(ttl as i64);
+            if time::OffsetDateTime::now_utc() > expires {
+                return Err(Error::InvalidEnvelope("message TTL expired".into()));
+            }
+        }
         let size = serde_json::to_vec(self)?.len();
         if size > DEFAULT_MAX_MESSAGE_SIZE {
             return Err(Error::MessageTooLarge {
                 size,
                 max: DEFAULT_MAX_MESSAGE_SIZE,
             });
+        }
+        Ok(())
+    }
+
+    /// Check that none of the recipients match the sender.
+    pub fn check_self_message(&self) -> Result<(), Error> {
+        let from_str = self.from.to_string();
+        for recipient in &self.to {
+            if recipient.to_string() == from_str {
+                return Err(Error::InvalidEnvelope(
+                    "cannot send message to own address".into(),
+                ));
+            }
         }
         Ok(())
     }
