@@ -14,7 +14,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 rand = "0.8"
 thiserror = "2"
-tokio = { version = "1", features = ["net", "io-util", "time"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "process"] }
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rcgen = "0.13"
@@ -26,6 +26,7 @@ aes-gcm = "0.10"
 sha2 = "0.10"
 flate2 = "1"
 zstd = "0.13"
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
