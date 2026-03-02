@@ -271,7 +271,7 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
         println!("setup already complete, re-running will overwrite existing keys and config");
         let answer = prompt("Continue?", "no");
         if !answer.starts_with('y') && !answer.starts_with('Y') {
-            println!("Aborted");
+            println!("aborted");
             return Ok(());
         }
     }
@@ -442,7 +442,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let listener = server::bind(&bind_addr).await?;
 
     tracing::info!("toq up on {}", address);
-    println!("{}", centered_logo());
     println!("toq up on {address}");
     println!("  public key: {}", keypair.public_key());
     println!("  listening on {bind_addr}");
@@ -506,14 +505,16 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let msg_count = total_messages.clone();
 
                 tokio::spawn(async move {
-                    // Check policy before full accept
-                    let policy_guard = policy_clone.lock().await;
-                    let policy_ref: &PolicyEngine = &policy_guard;
+                    // Lock policy only for accept_connection, release after
+                    let accept_result = {
+                        let policy_guard = policy_clone.lock().await;
+                        server::accept_connection(
+                            tcp, &tls_acceptor, &keypair_clone, &address_clone,
+                            &card_clone, &features_clone, Some(&policy_guard),
+                        ).await
+                    };
 
-                    match server::accept_connection(
-                        tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                        &card_clone, &features_clone, Some(policy_ref),
-                    ).await {
+                    match accept_result {
                         Ok((info, mut stream)) => {
                             tracing::info!("connected: {} ({})", info.peer_card.name, info.peer_address);
                             println!("connected: {} ({})", info.peer_card.name, info.peer_address);
@@ -584,7 +585,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                             tracing::warn!("connection from {peer_addr} failed: {e}");
                         }
                     }
-                    drop(policy_guard);
                 });
             }
             _ = tokio::signal::ctrl_c() => {
@@ -606,16 +606,12 @@ fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(unix)]
             {
                 use std::process::Command;
-                let signal = if graceful { "TERM" } else { "KILL" };
-                let status = Command::new("kill")
-                    .arg(format!("-{signal}"))
-                    .arg(pid.to_string())
-                    .status()?;
+                let status = Command::new("kill").arg(pid.to_string()).status()?;
                 if status.success() {
                     if graceful {
-                        println!("toq down --graceful (sent SIGTERM to PID {pid})");
+                        println!("toq down --graceful (PID {pid})");
                     } else {
-                        println!("toq down (sent SIGKILL to PID {pid})");
+                        println!("toq down (PID {pid})");
                     }
                     let _ = fs::remove_file(pid_path());
                     let _ = fs::remove_file(state_path());
@@ -684,7 +680,7 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
 fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
     let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
     if store.peers.is_empty() {
-        println!("No known peers");
+        println!("no known peers");
         return Ok(());
     }
     println!("{:<50} {:<12} LAST SEEN", "PUBLIC KEY", "STATUS");
@@ -747,7 +743,7 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
             let _ = fs::remove_file(entry.path());
         }
     }
-    println!("Logs cleared");
+    println!("logs cleared");
     Ok(())
 }
 
