@@ -89,12 +89,12 @@ async fn main() {
             ref message,
         } => run_send(address, message).await,
         Commands::Listen => run_listen().await,
-        Commands::Export { ref path } => stub(&format!("export {path}")),
-        Commands::Import { ref path } => stub(&format!("import {path}")),
-        Commands::RotateKeys => stub("rotate-keys"),
+        Commands::Export { ref path } => run_export(path),
+        Commands::Import { ref path } => run_import(path),
+        Commands::RotateKeys => run_rotate_keys(),
         Commands::ClearLogs => run_clear_logs(),
-        Commands::Doctor => stub("doctor"),
-        Commands::Upgrade => stub("upgrade"),
+        Commands::Doctor => run_doctor().await,
+        Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
     };
 
@@ -102,11 +102,6 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
-}
-
-fn stub(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("toq {cmd}: not yet implemented");
-    Ok(())
 }
 
 // --- Helpers ---
@@ -577,5 +572,168 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    Ok(())
+}
+
+fn run_rotate_keys() -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+
+    let old_keypair = keystore::load_keypair(&keystore::identity_key_path())?;
+    let old_public = old_keypair.public_key();
+
+    let new_keypair = Keypair::generate();
+    let new_public = new_keypair.public_key();
+
+    let proof = toq_core::crypto::generate_rotation_proof(&old_keypair, &new_public);
+
+    keystore::save_keypair(&new_keypair, &keystore::identity_key_path())?;
+
+    // Update peer store with rotation info
+    println!("keys rotated");
+    println!("  old public key: {old_public}");
+    println!("  new public key: {new_public}");
+    println!("  rotation proof: {proof}");
+    println!("\nIf the daemon is running, restart it to use the new keys");
+
+    Ok(())
+}
+
+fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+
+    let identity = fs::read_to_string(keystore::identity_key_path())?;
+    let tls_cert = fs::read_to_string(keystore::tls_cert_path())?;
+    let tls_key = fs::read_to_string(keystore::tls_key_path())?;
+    let config = fs::read_to_string(Config::default_path())?;
+    let peers = if keystore::peers_path().exists() {
+        fs::read_to_string(keystore::peers_path())?
+    } else {
+        "{}".to_string()
+    };
+
+    let bundle = serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "identity_key": identity.trim(),
+        "tls_cert": tls_cert,
+        "tls_key": tls_key,
+        "config": config,
+        "peers": peers,
+    });
+
+    fs::write(path, serde_json::to_string_pretty(&bundle)?)?;
+    println!("exported to {path}");
+
+    Ok(())
+}
+
+fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let data = fs::read_to_string(path)?;
+    let bundle: serde_json::Value = serde_json::from_str(&data)?;
+
+    let identity = bundle["identity_key"]
+        .as_str()
+        .ok_or("missing identity_key in backup")?;
+    let tls_cert = bundle["tls_cert"]
+        .as_str()
+        .ok_or("missing tls_cert in backup")?;
+    let tls_key = bundle["tls_key"]
+        .as_str()
+        .ok_or("missing tls_key in backup")?;
+    let config = bundle["config"]
+        .as_str()
+        .ok_or("missing config in backup")?;
+    let peers = bundle["peers"].as_str().ok_or("missing peers in backup")?;
+
+    // Create directories
+    let _ = fs::create_dir_all(dirs_path().join(toq_core::constants::KEYS_DIR));
+    let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
+
+    fs::write(keystore::identity_key_path(), identity)?;
+    fs::write(keystore::tls_cert_path(), tls_cert)?;
+    fs::write(keystore::tls_key_path(), tls_key)?;
+    fs::write(Config::default_path(), config)?;
+    fs::write(keystore::peers_path(), peers)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(
+            keystore::identity_key_path(),
+            fs::Permissions::from_mode(0o600),
+        );
+        let _ = fs::set_permissions(keystore::tls_key_path(), fs::Permissions::from_mode(0o600));
+    }
+
+    println!("imported from {path}");
+    println!("run `toq up` to start with the restored identity");
+
+    Ok(())
+}
+
+async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
+    println!("toq doctor\n");
+    let mut issues = 0;
+
+    // Check setup
+    if keystore::is_setup_complete() {
+        println!("  [ok] setup complete");
+    } else {
+        println!("  [!!] setup not complete, run `toq setup`");
+        issues += 1;
+        println!("\n{issues} issue(s) found");
+        return Ok(());
+    }
+
+    // Check config
+    match Config::load(&Config::default_path()) {
+        Ok(config) => println!("  [ok] config loaded (agent: {})", config.agent_name),
+        Err(e) => {
+            println!("  [!!] config error: {e}");
+            issues += 1;
+        }
+    }
+
+    // Check identity key
+    match keystore::load_keypair(&keystore::identity_key_path()) {
+        Ok(kp) => println!("  [ok] identity key valid ({})", kp.public_key()),
+        Err(e) => {
+            println!("  [!!] identity key error: {e}");
+            issues += 1;
+        }
+    }
+
+    // Check TLS cert
+    match keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path()) {
+        Ok(_) => println!("  [ok] TLS certificate valid"),
+        Err(e) => {
+            println!("  [!!] TLS certificate error: {e}");
+            issues += 1;
+        }
+    }
+
+    // Check port
+    let config = Config::load(&Config::default_path())?;
+    let bind_addr = format!("0.0.0.0:{}", config.port);
+    match tokio::net::TcpListener::bind(&bind_addr).await {
+        Ok(_) => println!("  [ok] port {} available", config.port),
+        Err(_) => {
+            println!("  [!!] port {} in use or unavailable", config.port);
+            issues += 1;
+        }
+    }
+
+    if issues == 0 {
+        println!("\nno issues found");
+    } else {
+        println!("\n{issues} issue(s) found");
+    }
+
+    Ok(())
+}
+
+fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+    let current = env!("CARGO_PKG_VERSION");
+    println!("toq v{current}");
+    println!("check for updates at https://github.com/toqprotocol/toq/releases");
     Ok(())
 }
