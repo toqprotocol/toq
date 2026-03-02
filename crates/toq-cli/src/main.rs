@@ -169,7 +169,8 @@ fn state_path() -> PathBuf {
 
 fn require_setup() {
     if !keystore::is_setup_complete() {
-        eprintln!("setup not complete, run `toq setup` first.");
+        eprintln!("setup not complete");
+        eprintln!("  run `toq setup` to generate keys and create config");
         std::process::exit(1);
     }
 }
@@ -407,7 +408,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(pid) = read_pid() {
-        eprintln!("toq appears to be running (PID {pid}), run `toq down` first.");
+        eprintln!("toq appears to be running (PID {pid})");
+        eprintln!("  run `toq down` to stop it, or `toq down --graceful` for a clean shutdown");
         std::process::exit(1);
     }
 
@@ -454,6 +456,30 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("  public key: {}", keypair.public_key());
     println!("  listening on {bind_addr}");
     println!("  connection mode: {}", config.connection_mode);
+
+    // Attempt UPnP port mapping
+    match std::process::Command::new("upnpc")
+        .args([
+            "-a",
+            &bind_addr,
+            &config.port.to_string(),
+            &config.port.to_string(),
+            "TCP",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => {
+            tracing::info!("UPnP port mapping added for port {}", config.port);
+            println!("  UPnP: port {} mapped", config.port);
+        }
+        _ => {
+            tracing::info!(
+                "UPnP not available (install miniupnpc or configure port forwarding manually)"
+            );
+        }
+    }
 
     // Load adapter config
     let adapter_url = config.adapter_http.as_ref().map(|h| h.callback_url.clone());
@@ -554,6 +580,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                             let adapter = toq_core::adapter::HttpAdapter::new(url);
                                             if let Err(e) = adapter.deliver(&agent_msg).await {
                                                 tracing::warn!("adapter delivery failed: {e}");
+                                                let _ = toq_core::connection::send_system_error(
+                                                    &mut stream, &keypair_clone, &address_clone,
+                                                    &info.peer_address, "agent_unavailable",
+                                                    "local agent is not responding",
+                                                    Some(&envelope.id.to_string()), seq,
+                                                ).await;
+                                                seq += 1;
                                             }
                                         }
 
@@ -605,6 +638,12 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     remove_pid();
     let _ = fs::remove_file(state_path());
+
+    // Persist peer store for crash recovery
+    let peer_store =
+        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+    let _ = peer_store.save(&keystore::peers_path());
+
     Ok(())
 }
 
@@ -1156,6 +1195,39 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
 fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
     let current = env!("CARGO_PKG_VERSION");
     println!("toq v{current}");
-    println!("check for updates at https://github.com/toqprotocol/toq/releases");
+
+    println!("checking for updates...");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent("toq")
+        .build()?;
+
+    match client
+        .get("https://api.github.com/repos/toqprotocol/toq/releases/latest")
+        .send()
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json()?;
+            if let Some(tag) = body["tag_name"].as_str() {
+                let latest = tag.trim_start_matches('v');
+                if latest != current {
+                    println!("  new version available: v{latest}");
+                    println!(
+                        "  download: {}",
+                        body["html_url"]
+                            .as_str()
+                            .unwrap_or("https://github.com/toqprotocol/toq/releases")
+                    );
+                } else {
+                    println!("  already up to date");
+                }
+            }
+        }
+        _ => {
+            println!("  could not check for updates");
+            println!("  visit https://github.com/toqprotocol/toq/releases");
+        }
+    }
+
     Ok(())
 }
