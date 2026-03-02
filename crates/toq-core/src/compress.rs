@@ -23,7 +23,8 @@ pub fn gzip_decompress(data: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Compress data using zstd.
 pub fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, Error> {
-    zstd::encode_all(data, 3).map_err(|e| Error::Io(e.to_string()))
+    zstd::encode_all(data, crate::constants::ZSTD_COMPRESSION_LEVEL)
+        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Decompress zstd data.

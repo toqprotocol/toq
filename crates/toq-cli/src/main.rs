@@ -3,6 +3,38 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use toq_core::adapter::AgentMessage;
+
+const LOGO_RAW: &str = r#"▄▄█████████████████▀▀▘
+     ▄▄█▀▀▀
+    ▄█▀▄▄▀▀▀▀▀▀▄▄▄▀▀▀▀▀▀▄▄
+   ▄██▄██▀       ▀██▀      ▀██▄
+  ▐██▐██          ██▌     ▄▄▄██▌
+  ▐█▌ ▀██▄      ▄██▀██▄ ▀▀▀██▀
+   ▀    ▀▀▀▄▄▄▀▀▀▀  ▀▀▀▄▄▀▀▐██
+                           ██▀
+                          ▀▀"#;
+
+const ABOUT: &str = "secure agent-to-agent communication";
+
+fn centered_logo() -> String {
+    let about_width = ABOUT.len();
+    let logo_width = LOGO_RAW
+        .lines()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let pad = if about_width > logo_width {
+        (about_width - logo_width) / 2
+    } else {
+        0
+    };
+    let prefix = " ".repeat(pad);
+    LOGO_RAW
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 use toq_core::card::AgentCard;
 use toq_core::config::{Config, dirs_path};
 use toq_core::constants::{
@@ -18,7 +50,7 @@ use toq_core::transport;
 use toq_core::types::{Address, MessageType};
 
 #[derive(Parser)]
-#[command(name = "toq", version, about = "toq protocol CLI")]
+#[command(name = "toq", version, about = ABOUT)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -74,6 +106,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    // Show logo when no args or --help
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{}", centered_logo());
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -192,6 +230,7 @@ fn prompt(question: &str, default: &str) -> String {
 // --- Commands ---
 
 fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", centered_logo());
     println!("toq setup\n");
 
     if keystore::is_setup_complete() {
@@ -265,10 +304,15 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
-    let bind_addr = format!("0.0.0.0:{}", config.port);
+    let bind_addr = format!(
+        "{}:{}",
+        toq_core::constants::DEFAULT_BIND_ADDRESS,
+        config.port
+    );
     let listener = server::bind(&bind_addr).await?;
 
     tracing::info!("toq up on {}", address);
+    println!("{}", centered_logo());
     println!("toq up on {address}");
     println!("  public key: {}", keypair.public_key());
     println!("  listening on {bind_addr}");
@@ -484,7 +528,7 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
             thread_id: None,
             reply_to: None,
             priority: None,
-            content_type: Some("application/json".into()),
+            content_type: Some(toq_core::constants::DEFAULT_CONTENT_TYPE.into()),
             ttl: None,
         },
     )
@@ -517,7 +561,11 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
-    let bind_addr = format!("0.0.0.0:{}", config.port);
+    let bind_addr = format!(
+        "{}:{}",
+        toq_core::constants::DEFAULT_BIND_ADDRESS,
+        config.port
+    );
     let listener = server::bind(&bind_addr).await?;
     println!("toq listen on {address}");
     println!("  listening on {bind_addr}");
@@ -713,7 +761,11 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check port
     let config = Config::load(&Config::default_path())?;
-    let bind_addr = format!("0.0.0.0:{}", config.port);
+    let bind_addr = format!(
+        "{}:{}",
+        toq_core::constants::DEFAULT_BIND_ADDRESS,
+        config.port
+    );
     match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(_) => println!("  [ok] port {} available", config.port),
         Err(_) => {

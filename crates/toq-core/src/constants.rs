@@ -117,6 +117,30 @@ pub const PEERS_FILE: &str = "peers.json";
 /// Default SAN for self-signed TLS certificates.
 pub const TLS_SELF_SIGNED_SAN: &str = "localhost";
 
+/// Default bind address for the listener.
+pub const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0";
+
+/// Default content type for application messages.
+pub const DEFAULT_CONTENT_TYPE: &str = "application/json";
+
+/// Default maximum file size in bytes (10 MB).
+pub const DEFAULT_MAX_FILE_SIZE: usize = 10_485_760;
+
+/// Default zstd compression level.
+pub const ZSTD_COMPRESSION_LEVEL: i32 = 3;
+
+/// Adapter response timeout for stdin adapter.
+pub const ADAPTER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The toq data directory name.
+pub const TOQ_DIR_NAME: &str = ".toq";
+
+/// Config filename.
+pub const CONFIG_FILE: &str = "config.toml";
+
+/// Session ID prefix.
+pub const SESSION_ID_PREFIX: &str = "sess-";
+
 /// Subdirectory for logs within ~/.toq/.
 pub const LOGS_DIR: &str = "logs";
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::constants::{MAGIC_BYTES, MAX_HANDSHAKE_PAYLOAD, PROTOCOL_VERSION};
+use crate::constants::{MAGIC_BYTES, MAX_HANDSHAKE_PAYLOAD, PROTOCOL_VERSION, SESSION_ID_PREFIX};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
 use crate::framing;
@@ -132,7 +132,7 @@ where
 
     // Step 3: send receiver credentials
     let (challenge_bytes, challenge_b64) = generate_challenge();
-    let session_id = format!("sess-{}", Uuid::new_v4());
+    let session_id = format!("{}{}", SESSION_ID_PREFIX, Uuid::new_v4());
     let creds = ReceiverCredentials {
         public_key: keypair.public_key().to_encoded(),
         challenge: challenge_b64,

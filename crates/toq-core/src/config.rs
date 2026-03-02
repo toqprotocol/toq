@@ -64,7 +64,7 @@ impl Default for Config {
             verbosity: "non-technical".into(),
             log_level: "warn".into(),
             accept_files: false,
-            max_file_size: 10_485_760,
+            max_file_size: DEFAULT_MAX_FILE_SIZE,
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_threads_per_connection: DEFAULT_MAX_THREADS_PER_CONNECTION,
@@ -99,7 +99,7 @@ impl Config {
 
     /// Default config file path: `~/.toq/config.toml`
     pub fn default_path() -> PathBuf {
-        dirs_path().join("config.toml")
+        dirs_path().join(CONFIG_FILE)
     }
 
     /// Load config from a TOML file. Returns defaults if file doesn't exist.
@@ -124,5 +124,5 @@ impl Config {
 /// The `~/.toq/` directory path.
 pub fn dirs_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".toq")
+    PathBuf::from(home).join(TOQ_DIR_NAME)
 }

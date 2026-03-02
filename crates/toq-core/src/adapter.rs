@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -174,7 +173,7 @@ impl StdinAdapter {
         let mut response_line = String::new();
 
         match tokio::time::timeout(
-            Duration::from_secs(30),
+            crate::constants::ADAPTER_RESPONSE_TIMEOUT,
             reader.read_line(&mut response_line),
         )
         .await
