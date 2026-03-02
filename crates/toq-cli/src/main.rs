@@ -187,16 +187,45 @@ fn setup_logging() {
     let log_dir = dirs_path().join(LOGS_DIR);
     let _ = fs::create_dir_all(&log_dir);
 
+    // Prune old log files based on retention
+    if let Ok(config) = Config::load(&Config::default_path()) {
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(config.log_retention_days as u64 * 86400);
+        if let Ok(entries) = fs::read_dir(&log_dir) {
+            for entry in entries.flatten() {
+                let should_remove = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|modified| modified < cutoff);
+                if should_remove {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
     let file_appender = tracing_appender::rolling::daily(&log_dir, LOG_FILE);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Keep the guard alive for the lifetime of the program by leaking it
     std::mem::forget(_guard);
+
+    // Wire log level from config
+    let level = Config::load(&Config::default_path())
+        .map(|c| c.log_level)
+        .unwrap_or_else(|_| "warn".into());
+    let filter = match level.as_str() {
+        "error" => tracing_subscriber::filter::LevelFilter::ERROR,
+        "info" => tracing_subscriber::filter::LevelFilter::INFO,
+        "debug" => tracing_subscriber::filter::LevelFilter::DEBUG,
+        _ => tracing_subscriber::filter::LevelFilter::WARN,
+    };
 
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
         .with_ansi(false)
         .with_target(false)
+        .with_max_level(filter)
         .init();
 }
 
@@ -315,6 +344,17 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("    - A firewall to restrict access");
     println!("    - A reverse proxy for additional protection");
     println!("    - Using 'approval' or 'allowlist' connection mode");
+
+    println!("\n--- DNS discovery (optional) ---");
+    println!("  To make your agent discoverable via DNS, add a TXT record:");
+    println!(
+        "    _toq._tcp.yourdomain.com  \"v=toq1; key={}; agent={agent_name}\"",
+        keypair
+            .public_key()
+            .to_encoded()
+            .strip_prefix("ed25519:")
+            .unwrap_or("")
+    );
 
     println!("\nRun `toq up` to start your endpoint");
 
@@ -1007,6 +1047,29 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         Ok(_) => println!("  [ok] port {} available", config.port),
         Err(_) => {
             println!("  [!!] port {} in use or unavailable", config.port);
+            issues += 1;
+        }
+    }
+
+    // Check disk space
+    let toq_dir = dirs_path();
+    match fs::metadata(&toq_dir) {
+        Ok(_) => {
+            // Check if we can write (basic disk health check)
+            let test_path = toq_dir.join(".disk_check");
+            match fs::write(&test_path, "ok") {
+                Ok(_) => {
+                    let _ = fs::remove_file(&test_path);
+                    println!("  [ok] disk writable");
+                }
+                Err(_) => {
+                    println!("  [!!] disk not writable at {}", toq_dir.display());
+                    issues += 1;
+                }
+            }
+        }
+        Err(_) => {
+            println!("  [!!] toq directory not found");
             issues += 1;
         }
     }
