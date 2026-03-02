@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -255,19 +255,6 @@ fn load_card(config: &Config, keypair: &Keypair) -> AgentCard {
     }
 }
 
-fn prompt(question: &str, default: &str) -> String {
-    print!("{question} [{default}]: ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        default.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 // --- Commands ---
 
 fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
@@ -275,45 +262,59 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("toq setup\n");
 
     if keystore::is_setup_complete() {
-        println!("Setup already complete, re-running will overwrite existing keys and config");
-        let answer = prompt("Continue?", "no");
-        if !answer.starts_with('y') && !answer.starts_with('Y') {
+        let overwrite =
+            inquire::Confirm::new("Setup already complete. Overwrite existing keys and config?")
+                .with_default(false)
+                .prompt()?;
+        if !overwrite {
             println!("Aborted");
             return Ok(());
         }
     }
 
-    let agent_name = prompt("Agent name", "agent");
-    Address::new("localhost", &agent_name)?;
+    let agent_name = inquire::Text::new("Agent name")
+        .with_default("agent")
+        .with_validator(|input: &str| match Address::new("localhost", input) {
+            Ok(_) => Ok(inquire::validator::Validation::Valid),
+            Err(e) => Ok(inquire::validator::Validation::Invalid(
+                e.to_string().into(),
+            )),
+        })
+        .prompt()?;
 
-    println!("\nWho can connect to your agent?");
-    println!("  1. approval  - You approve each new agent (recommended)");
-    println!("  2. open      - Anyone can connect");
-    println!("  3. allowlist - Only pre-approved agents");
-    let mode_choice = prompt("Choice", "1");
-    let connection_mode = match mode_choice.as_str() {
-        "2" | "open" => "open",
-        "3" | "allowlist" => "allowlist",
-        _ => "approval",
+    let mode_options = vec![
+        "approval  - You approve each new agent (recommended)",
+        "open      - Anyone can connect",
+        "allowlist - Only pre-approved agents",
+    ];
+    let mode_choice =
+        inquire::Select::new("Who can connect to your agent?", mode_options).prompt()?;
+    let connection_mode = if mode_choice.starts_with("open") {
+        "open"
+    } else if mode_choice.starts_with("allowlist") {
+        "allowlist"
+    } else {
+        "approval"
     };
 
-    println!("\nHow does your agent receive messages?");
-    println!("  1. http   - HTTP POST to a localhost URL (recommended)");
-    println!("  2. stdin  - stdin/stdout JSON lines");
-    println!("  3. unix   - Unix domain socket");
-    let adapter_choice = prompt("Choice", "1");
-    let adapter = match adapter_choice.as_str() {
-        "2" | "stdin" => "stdin",
-        "3" | "unix" => "unix",
-        _ => "http",
+    let adapter_options = vec![
+        "http   - HTTP POST to a localhost URL (recommended)",
+        "stdin  - stdin/stdout JSON lines",
+        "unix   - Unix domain socket",
+    ];
+    let adapter_choice =
+        inquire::Select::new("How does your agent receive messages?", adapter_options).prompt()?;
+    let adapter = if adapter_choice.starts_with("stdin") {
+        "stdin"
+    } else if adapter_choice.starts_with("unix") {
+        "unix"
+    } else {
+        "http"
     };
 
-    println!("\nWhich agent framework are you using? (optional)");
-    println!("  1. none / custom");
-    println!("  2. LangChain");
-    println!("  3. CrewAI");
-    println!("  4. OpenClaw");
-    let framework = prompt("Choice", "1");
+    let framework_options = vec!["none / custom", "LangChain", "CrewAI", "OpenClaw"];
+    let framework =
+        inquire::Select::new("Which agent framework? (optional)", framework_options).prompt()?;
 
     println!("\nGenerating Ed25519 identity keypair...");
     let keypair = Keypair::generate();
@@ -330,7 +331,6 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     config.save(&Config::default_path())?;
     println!("Config saved to {}", Config::default_path().display());
 
-    // Create logs directory
     let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
 
     println!("\n--- Setup complete ---");
@@ -371,16 +371,13 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or("")
     );
 
-    match framework.as_str() {
-        "2" | "3" | "4" => {
-            println!("\n--- Framework integration ---");
-            println!("  toq SDKs and framework plugins are coming soon");
-            println!(
-                "  For now, configure your agent to receive messages via the {} adapter",
-                adapter
-            );
-        }
-        _ => {}
+    if framework != "none / custom" {
+        println!("\n--- Framework integration ---");
+        println!("  toq SDKs and framework plugins are coming soon");
+        println!(
+            "  For now, configure your agent to receive messages via the {} adapter",
+            adapter
+        );
     }
 
     println!("\nRun `toq up` to start your endpoint");
@@ -1015,7 +1012,9 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let plaintext = serde_json::to_string_pretty(&bundle)?;
 
     // Encrypt with passphrase
-    let passphrase = prompt("Export passphrase", "");
+    let passphrase = inquire::Password::new("Export passphrase")
+        .without_confirmation()
+        .prompt()?;
     if passphrase.is_empty() {
         return Err("passphrase cannot be empty".into());
     }
@@ -1049,7 +1048,9 @@ fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let bundle: serde_json::Value = if wrapper.get("encrypted").and_then(|v| v.as_bool())
         == Some(true)
     {
-        let passphrase = prompt("Import passphrase", "");
+        let passphrase = inquire::Password::new("Import passphrase")
+            .without_confirmation()
+            .prompt()?;
 
         let key_bytes = Sha256::digest(passphrase.as_bytes());
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
