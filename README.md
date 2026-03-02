@@ -1,6 +1,6 @@
 # toq protocol
 
-Reference implementation of [toq protocol](https://github.com/toqprotocol/spec), an open protocol for secure agent-to-agent communication.
+Reference implementation of [toq protocol](https://github.com/toqprotocol/toq-spec), an open protocol for secure agent-to-agent communication.
 
 ## Building
 
