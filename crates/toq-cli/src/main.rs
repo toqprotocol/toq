@@ -38,14 +38,18 @@ fn centered_logo() -> String {
 use toq_core::card::AgentCard;
 use toq_core::config::{Config, dirs_path};
 use toq_core::constants::{
-    DEFAULT_MAX_MESSAGE_SIZE, LOG_FILE, LOGS_DIR, PID_FILE, PROTOCOL_VERSION, STATE_FILE,
+    DEFAULT_CONNECTIONS_PER_IP_PER_SEC, DEFAULT_MAX_MESSAGE_SIZE, LOG_FILE, LOGS_DIR, PID_FILE,
+    PROTOCOL_VERSION, STATE_FILE,
 };
 use toq_core::crypto::Keypair;
 use toq_core::framing;
 use toq_core::keystore;
 use toq_core::messaging::{self, SendParams};
 use toq_core::negotiation::Features;
+use toq_core::policy::{ConnectionMode, PolicyEngine};
+use toq_core::ratelimit::RateLimiter;
 use toq_core::server;
+use toq_core::session::SessionStore;
 use toq_core::transport;
 use toq_core::types::{Address, MessageType};
 
@@ -117,7 +121,7 @@ async fn main() {
     let result = match cli.command {
         Commands::Setup => run_setup(),
         Commands::Up { foreground: _ } => run_up().await,
-        Commands::Down { graceful: _ } => run_down(),
+        Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
         Commands::Peers => run_peers(),
         Commands::Block { ref agent } => run_block(agent),
@@ -256,6 +260,17 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
         _ => "approval",
     };
 
+    println!("\nHow does your agent receive messages?");
+    println!("  1. http   - HTTP POST to a localhost URL (recommended)");
+    println!("  2. stdin  - stdin/stdout JSON lines");
+    println!("  3. unix   - Unix domain socket");
+    let adapter_choice = prompt("Choice", "1");
+    let adapter = match adapter_choice.as_str() {
+        "2" | "stdin" => "stdin",
+        "3" | "unix" => "unix",
+        _ => "http",
+    };
+
     println!("\nGenerating Ed25519 identity keypair...");
     let keypair = Keypair::generate();
     keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
@@ -265,7 +280,9 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     keystore::generate_and_save_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
     println!("  Saved to {}", keystore::tls_cert_path().display());
 
-    let config = Config::default().with_agent(agent_name.clone(), connection_mode.to_string());
+    let config = Config::default()
+        .with_agent(agent_name.clone(), connection_mode.to_string())
+        .with_adapter(adapter.to_string());
     config.save(&Config::default_path())?;
     println!("Config saved to {}", Config::default_path().display());
 
@@ -304,6 +321,23 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
+    // Wire PolicyEngine from config
+    let policy_mode = match config.connection_mode.as_str() {
+        "open" => ConnectionMode::Open,
+        "allowlist" => ConnectionMode::Allowlist,
+        "dns-verified" => ConnectionMode::DnsVerified,
+        _ => ConnectionMode::Approval,
+    };
+    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(PolicyEngine::new(policy_mode)));
+
+    // Wire RateLimiter
+    let rate_limiter = std::sync::Arc::new(tokio::sync::Mutex::new(RateLimiter::new(
+        DEFAULT_CONNECTIONS_PER_IP_PER_SEC,
+    )));
+
+    // Wire SessionStore
+    let sessions = std::sync::Arc::new(tokio::sync::Mutex::new(SessionStore::new()));
+
     let bind_addr = format!(
         "{}:{}",
         toq_core::constants::DEFAULT_BIND_ADDRESS,
@@ -328,10 +362,23 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     });
     let _ = fs::write(state_path(), serde_json::to_string_pretty(&state)?);
 
+    // Load adapter config
+    let adapter_url = config.adapter_http.as_ref().map(|h| h.callback_url.clone());
+
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 let (tcp, peer_addr) = accept?;
+
+                // Rate limiting
+                {
+                    let mut rl = rate_limiter.lock().await;
+                    if !rl.check(peer_addr.ip()) {
+                        tracing::warn!("rate limited: {}", peer_addr.ip());
+                        continue;
+                    }
+                }
+
                 tracing::info!("connection from {}", peer_addr);
 
                 let tls_acceptor = tls_acceptor.clone();
@@ -339,20 +386,88 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
                 let address_clone = address.clone();
                 let card_clone = local_card.clone();
                 let features_clone = features.clone();
+                let policy_clone = policy.clone();
+                let sessions_clone = sessions.clone();
+                let adapter_url_clone = adapter_url.clone();
 
                 tokio::spawn(async move {
+                    // Check policy before full accept
+                    let policy_guard = policy_clone.lock().await;
+                    let policy_ref: &PolicyEngine = &policy_guard;
+
                     match server::accept_connection(
                         tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                        &card_clone, &features_clone, None,
+                        &card_clone, &features_clone, Some(policy_ref),
                     ).await {
-                        Ok((conn, _stream)) => {
-                            tracing::info!("connected: {} ({})", conn.peer_card.name, conn.peer_address);
-                            println!("connected: {} ({})", conn.peer_card.name, conn.peer_address);
+                        Ok((info, mut stream)) => {
+                            tracing::info!("connected: {} ({})", info.peer_card.name, info.peer_address);
+                            println!("connected: {} ({})", info.peer_card.name, info.peer_address);
+
+                            // Register session
+                            {
+                                let mut sess = sessions_clone.lock().await;
+                                // Check for duplicate
+                                if let Some(old_id) = sess.check_duplicate(&info.peer_public_key) {
+                                    tracing::info!("duplicate connection, closing old session {}", old_id);
+                                    sess.remove(&old_id);
+                                }
+                                sess.register(&info.session_id, &info.peer_public_key);
+                            }
+
+                            // Connection receive loop
+                            let mut seq = 2u64;
+                            while let Ok(envelope) = framing::recv_envelope(
+                                &mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE
+                            ).await {
+                                match envelope.msg_type {
+                                    MessageType::MessageSend => {
+                                        let agent_msg = AgentMessage::from_envelope(&envelope);
+                                        tracing::info!("message from {}: {}", agent_msg.from, agent_msg.id);
+
+                                        // Deliver to adapter
+                                        if let Some(ref url) = adapter_url_clone {
+                                            let adapter = toq_core::adapter::HttpAdapter::new(url);
+                                            if let Err(e) = adapter.deliver(&agent_msg).await {
+                                                tracing::warn!("adapter delivery failed: {e}");
+                                            }
+                                        }
+
+                                        // Send ack
+                                        let _ = messaging::send_ack(
+                                            &mut stream, &keypair_clone, &address_clone,
+                                            &info.peer_address, &envelope.id, seq,
+                                        ).await;
+                                        seq += 1;
+                                    }
+                                    MessageType::SessionDisconnect => {
+                                        tracing::info!("peer disconnected: {}", info.peer_address);
+                                        break;
+                                    }
+                                    MessageType::Heartbeat => {
+                                        let _ = toq_core::connection::send_heartbeat_ack(
+                                            &mut stream, &keypair_clone, &address_clone,
+                                            &info.peer_address, &envelope.id, seq,
+                                        ).await;
+                                        seq += 1;
+                                    }
+                                    other => {
+                                        tracing::debug!("received: {other:?}");
+                                    }
+                                }
+                            }
+
+                            // Clean up session
+                            {
+                                let mut sess = sessions_clone.lock().await;
+                                sess.remove(&info.session_id);
+                            }
+                            tracing::info!("connection closed: {}", info.peer_address);
                         }
                         Err(e) => {
                             tracing::warn!("connection from {peer_addr} failed: {e}");
                         }
                     }
+                    drop(policy_guard);
                 });
             }
             _ = tokio::signal::ctrl_c() => {
@@ -368,15 +483,23 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_down() -> Result<(), Box<dyn std::error::Error>> {
+fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
     match read_pid() {
         Some(pid) => {
             #[cfg(unix)]
             {
                 use std::process::Command;
-                let status = Command::new("kill").arg(pid.to_string()).status()?;
+                let signal = if graceful { "TERM" } else { "KILL" };
+                let status = Command::new("kill")
+                    .arg(format!("-{signal}"))
+                    .arg(pid.to_string())
+                    .status()?;
                 if status.success() {
-                    println!("toq down (sent signal to PID {pid})");
+                    if graceful {
+                        println!("toq down --graceful (sent SIGTERM to PID {pid})");
+                    } else {
+                        println!("toq down (sent SIGKILL to PID {pid})");
+                    }
                     let _ = fs::remove_file(pid_path());
                     let _ = fs::remove_file(state_path());
                 } else {
@@ -385,6 +508,7 @@ fn run_down() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(not(unix))]
             {
+                let _ = graceful;
                 eprintln!("toq down not supported on this platform");
             }
         }
@@ -442,11 +566,19 @@ fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-    store.upsert(
-        &toq_core::crypto::PublicKey::from_encoded(agent)?,
-        "",
-        toq_core::keystore::PeerStatus::Blocked,
-    );
+    // Try parsing as encoded public key first, then as address
+    let public_key = match toq_core::crypto::PublicKey::from_encoded(agent) {
+        Ok(key) => key,
+        Err(_) => {
+            // Try looking up by address in peer store
+            let found = store.peers.iter().find(|(_, r)| r.address == agent);
+            match found {
+                Some((key_str, _)) => toq_core::crypto::PublicKey::from_encoded(key_str)?,
+                None => return Err(format!("unknown agent: {agent}").into()),
+            }
+        }
+    };
+    store.upsert(&public_key, "", toq_core::keystore::PeerStatus::Blocked);
     store.save(&keystore::peers_path())?;
     println!("blocked {agent}");
     Ok(())
@@ -477,18 +609,28 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
 fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lp = log_path();
     if !lp.exists() {
-        println!("No logs found");
+        println!("no logs found");
         return Ok(());
     }
 
     if follow {
-        // Tail the file
         let file = fs::File::open(&lp)?;
-        let reader = io::BufReader::new(file);
-        for line in reader.lines() {
-            println!("{}", line?);
+        let mut reader = io::BufReader::new(file);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                Ok(_) => {
+                    print!("{line}");
+                }
+                Err(e) => {
+                    eprintln!("error reading log: {e}");
+                    break;
+                }
+            }
         }
-        println!("(end of log, --follow live tailing requires running daemon)");
     } else {
         let content = fs::read_to_string(&lp)?;
         print!("{content}");

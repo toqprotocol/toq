@@ -97,6 +97,12 @@ impl Config {
         self
     }
 
+    /// Set the adapter type.
+    pub fn with_adapter(mut self, adapter: String) -> Self {
+        self.adapter = adapter;
+        self
+    }
+
     /// Default config file path: `~/.toq/config.toml`
     pub fn default_path() -> PathBuf {
         dirs_path().join(CONFIG_FILE)
