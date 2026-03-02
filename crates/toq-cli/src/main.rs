@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use toq_core::adapter::AgentMessage;
 
 const LOGO_RAW: &str = r#"▄▄█████████████████▀▀▘
@@ -300,6 +301,13 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
         _ => "http",
     };
 
+    println!("\nWhich agent framework are you using? (optional)");
+    println!("  1. none / custom");
+    println!("  2. LangChain");
+    println!("  3. CrewAI");
+    println!("  4. OpenClaw");
+    let framework = prompt("Choice", "1");
+
     println!("\nGenerating Ed25519 identity keypair...");
     let keypair = Keypair::generate();
     keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
@@ -355,6 +363,18 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
             .strip_prefix("ed25519:")
             .unwrap_or("")
     );
+
+    match framework.as_str() {
+        "2" | "3" | "4" => {
+            println!("\n--- Framework integration ---");
+            println!("  toq SDKs and framework plugins are coming soon");
+            println!(
+                "  For now, configure your agent to receive messages via the {} adapter",
+                adapter
+            );
+        }
+        _ => {}
+    }
 
     println!("\nRun `toq up` to start your endpoint");
 
@@ -428,18 +448,35 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("  listening on {bind_addr}");
     println!("  connection mode: {}", config.connection_mode);
 
-    // Write state file
-    let state = serde_json::json!({
-        "status": "running",
-        "address": address.to_string(),
-        "port": config.port,
-        "connection_mode": config.connection_mode,
-        "pid": std::process::id(),
-    });
-    let _ = fs::write(state_path(), serde_json::to_string_pretty(&state)?);
-
     // Load adapter config
     let adapter_url = config.adapter_http.as_ref().map(|h| h.callback_url.clone());
+
+    // Shared connection counter
+    let active_connections = std::sync::Arc::new(AtomicUsize::new(0));
+    let total_messages = std::sync::Arc::new(AtomicUsize::new(0));
+
+    // Helper to update state file
+    let state_address = address.to_string();
+    let state_mode = config.connection_mode.clone();
+    let state_port = config.port;
+    let conn_counter = active_connections.clone();
+    let msg_counter = total_messages.clone();
+    let update_state = move || {
+        let state = serde_json::json!({
+            "status": "running",
+            "address": state_address,
+            "port": state_port,
+            "connection_mode": state_mode,
+            "pid": std::process::id(),
+            "active_connections": conn_counter.load(Ordering::Relaxed),
+            "total_messages": msg_counter.load(Ordering::Relaxed),
+        });
+        let _ = fs::write(
+            state_path(),
+            serde_json::to_string_pretty(&state).unwrap_or_default(),
+        );
+    };
+    update_state();
 
     loop {
         tokio::select! {
@@ -465,6 +502,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let policy_clone = policy.clone();
                 let sessions_clone = sessions.clone();
                 let adapter_url_clone = adapter_url.clone();
+                let conn_count = active_connections.clone();
+                let msg_count = total_messages.clone();
 
                 tokio::spawn(async move {
                     // Check policy before full accept
@@ -482,13 +521,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                             // Register session
                             {
                                 let mut sess = sessions_clone.lock().await;
-                                // Check for duplicate
                                 if let Some(old_id) = sess.check_duplicate(&info.peer_public_key) {
                                     tracing::info!("duplicate connection, closing old session {}", old_id);
                                     sess.remove(&old_id);
                                 }
                                 sess.register(&info.session_id, &info.peer_public_key);
                             }
+                            conn_count.fetch_add(1, Ordering::Relaxed);
 
                             // Connection receive loop
                             let mut seq = 2u64;
@@ -499,6 +538,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                     MessageType::MessageSend => {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         tracing::info!("message from {}: {}", agent_msg.from, agent_msg.id);
+                                        msg_count.fetch_add(1, Ordering::Relaxed);
 
                                         // Deliver to adapter
                                         if let Some(ref url) = adapter_url_clone {
@@ -537,6 +577,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                 let mut sess = sessions_clone.lock().await;
                                 sess.remove(&info.session_id);
                             }
+                            conn_count.fetch_sub(1, Ordering::Relaxed);
                             tracing::info!("connection closed: {}", info.peer_address);
                         }
                         Err(e) => {
@@ -603,6 +644,13 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     }
     let data = fs::read_to_string(sp)?;
     let state: serde_json::Value = serde_json::from_str(&data)?;
+
+    let config = Config::load(&Config::default_path()).ok();
+    let technical = config
+        .as_ref()
+        .map(|c| c.verbosity == "technical")
+        .unwrap_or(false);
+
     println!("toq status");
     println!(
         "  status:          {}",
@@ -612,12 +660,24 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
         "  address:         {}",
         state["address"].as_str().unwrap_or("unknown")
     );
-    println!("  port:            {}", state["port"]);
     println!(
         "  connection mode: {}",
         state["connection_mode"].as_str().unwrap_or("unknown")
     );
-    println!("  pid:             {}", state["pid"]);
+    println!(
+        "  connections:     {}",
+        state["active_connections"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  messages:        {}",
+        state["total_messages"].as_u64().unwrap_or(0)
+    );
+
+    if technical {
+        println!("  port:            {}", state["port"]);
+        println!("  pid:             {}", state["pid"]);
+    }
+
     Ok(())
 }
 
