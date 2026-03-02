@@ -1,9 +1,13 @@
 use clap::{Parser, Subcommand};
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use toq_core::adapter::AgentMessage;
 use toq_core::card::AgentCard;
-use toq_core::config::Config;
-use toq_core::constants::{DEFAULT_MAX_MESSAGE_SIZE, PROTOCOL_VERSION};
+use toq_core::config::{Config, dirs_path};
+use toq_core::constants::{
+    DEFAULT_MAX_MESSAGE_SIZE, LOG_FILE, LOGS_DIR, PID_FILE, PROTOCOL_VERSION, STATE_FILE,
+};
 use toq_core::crypto::Keypair;
 use toq_core::framing;
 use toq_core::keystore;
@@ -41,34 +45,17 @@ enum Commands {
     /// List known peers with status and last seen time.
     Peers,
     /// Block an agent by address or public key.
-    Block {
-        /// Agent address or public key to block.
-        agent: String,
-    },
+    Block { agent: String },
     /// Remove an agent from the blocklist.
-    Unblock {
-        /// Agent address or public key to unblock.
-        agent: String,
-    },
+    Unblock { agent: String },
     /// Send a test message to an agent.
-    Send {
-        /// Target agent address.
-        address: String,
-        /// Message content.
-        message: String,
-    },
+    Send { address: String, message: String },
     /// Start a dummy agent that prints incoming messages.
     Listen,
     /// Export keys, config, and peer list as an encrypted backup.
-    Export {
-        /// Output file path.
-        path: String,
-    },
+    Export { path: String },
     /// Restore from an encrypted backup file.
-    Import {
-        /// Backup file path.
-        path: String,
-    },
+    Import { path: String },
     /// Rotate keys and broadcast to connected peers.
     RotateKeys,
     /// Delete all audit logs.
@@ -92,17 +79,11 @@ async fn main() {
     let result = match cli.command {
         Commands::Setup => run_setup(),
         Commands::Up { foreground: _ } => run_up().await,
-        Commands::Down { graceful } => {
-            if graceful {
-                stub("down --graceful")
-            } else {
-                stub("down")
-            }
-        }
-        Commands::Status => stub("status"),
-        Commands::Peers => stub("peers"),
-        Commands::Block { ref agent } => stub(&format!("block {agent}")),
-        Commands::Unblock { ref agent } => stub(&format!("unblock {agent}")),
+        Commands::Down { graceful: _ } => run_down(),
+        Commands::Status => run_status(),
+        Commands::Peers => run_peers(),
+        Commands::Block { ref agent } => run_block(agent),
+        Commands::Unblock { ref agent } => run_unblock(agent),
         Commands::Send {
             ref address,
             ref message,
@@ -111,16 +92,10 @@ async fn main() {
         Commands::Export { ref path } => stub(&format!("export {path}")),
         Commands::Import { ref path } => stub(&format!("import {path}")),
         Commands::RotateKeys => stub("rotate-keys"),
-        Commands::ClearLogs => stub("clear-logs"),
+        Commands::ClearLogs => run_clear_logs(),
         Commands::Doctor => stub("doctor"),
         Commands::Upgrade => stub("upgrade"),
-        Commands::Logs { follow } => {
-            if follow {
-                stub("logs --follow")
-            } else {
-                stub("logs")
-            }
-        }
+        Commands::Logs { follow } => run_logs(follow),
     };
 
     if let Err(e) = result {
@@ -132,6 +107,78 @@ async fn main() {
 fn stub(cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("toq {cmd}: not yet implemented");
     Ok(())
+}
+
+// --- Helpers ---
+
+fn pid_path() -> PathBuf {
+    dirs_path().join(PID_FILE)
+}
+
+fn log_path() -> PathBuf {
+    dirs_path().join(LOGS_DIR).join(LOG_FILE)
+}
+
+fn state_path() -> PathBuf {
+    dirs_path().join(STATE_FILE)
+}
+
+fn require_setup() {
+    if !keystore::is_setup_complete() {
+        eprintln!("setup not complete, run `toq setup` first.");
+        std::process::exit(1);
+    }
+}
+
+fn write_pid() -> Result<(), Box<dyn std::error::Error>> {
+    let pid = std::process::id();
+    fs::write(pid_path(), pid.to_string())?;
+    Ok(())
+}
+
+fn remove_pid() {
+    let _ = fs::remove_file(pid_path());
+}
+
+fn read_pid() -> Option<u32> {
+    fs::read_to_string(pid_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+fn setup_logging() {
+    let log_dir = dirs_path().join(LOGS_DIR);
+    let _ = fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, LOG_FILE);
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Keep the guard alive for the lifetime of the program by leaking it
+    std::mem::forget(_guard);
+
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_target(false)
+        .init();
+}
+
+fn load_card(config: &Config, keypair: &Keypair) -> AgentCard {
+    AgentCard {
+        name: config.agent_name.clone(),
+        description: None,
+        public_key: keypair.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: vec![],
+        accept_files: config.accept_files,
+        max_file_size: if config.accept_files {
+            Some(config.max_file_size as u64)
+        } else {
+            None
+        },
+        max_message_size: Some(config.max_message_size),
+        connection_mode: Some(config.connection_mode.clone()),
+    }
 }
 
 fn prompt(question: &str, default: &str) -> String {
@@ -147,23 +194,23 @@ fn prompt(question: &str, default: &str) -> String {
     }
 }
 
+// --- Commands ---
+
 fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("toq setup\n");
 
     if keystore::is_setup_complete() {
-        println!("Setup already complete. Re-running will overwrite existing keys and config.");
+        println!("setup already complete, re-running will overwrite existing keys and config");
         let answer = prompt("Continue?", "no");
         if !answer.starts_with('y') && !answer.starts_with('Y') {
-            println!("Aborted.");
+            println!("Aborted");
             return Ok(());
         }
     }
 
-    // Agent name
     let agent_name = prompt("Agent name", "agent");
     Address::new("localhost", &agent_name)?;
 
-    // Connection mode
     println!("\nWho can connect to your agent?");
     println!("  1. approval  - You approve each new agent (recommended)");
     println!("  2. open      - Anyone can connect");
@@ -175,36 +222,37 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
         _ => "approval",
     };
 
-    // Generate identity keypair
     println!("\nGenerating Ed25519 identity keypair...");
     let keypair = Keypair::generate();
     keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
     println!("  Saved to {}", keystore::identity_key_path().display());
 
-    // Generate TLS certificate
     println!("Generating self-signed TLS certificate...");
     keystore::generate_and_save_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
     println!("  Saved to {}", keystore::tls_cert_path().display());
 
-    // Create config
     let config = Config::default().with_agent(agent_name.clone(), connection_mode.to_string());
     config.save(&Config::default_path())?;
     println!("Config saved to {}", Config::default_path().display());
 
-    // Summary
+    // Create logs directory
+    let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
+
     println!("\n--- Setup complete ---");
     println!("  Agent name:      {agent_name}");
     println!("  Public key:      {}", keypair.public_key());
     println!("  Connection mode: {connection_mode}");
     println!("  Address:         toq://localhost/{agent_name}");
-    println!("\nRun `toq up` to start your endpoint.");
+    println!("\nRun `toq up` to start your endpoint");
 
     Ok(())
 }
 
 async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
-    if !keystore::is_setup_complete() {
-        eprintln!("Setup not complete. Run `toq setup` first.");
+    require_setup();
+
+    if let Some(pid) = read_pid() {
+        eprintln!("toq appears to be running (PID {pid}), run `toq down` first.");
         std::process::exit(1);
     }
 
@@ -213,39 +261,39 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
     let (certs, key) =
         keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
 
+    setup_logging();
+    write_pid()?;
+
     let address = Address::new("localhost", &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
-
-    let local_card = AgentCard {
-        name: config.agent_name.clone(),
-        description: None,
-        public_key: keypair.public_key().to_encoded(),
-        protocol_version: PROTOCOL_VERSION.into(),
-        capabilities: vec![],
-        accept_files: config.accept_files,
-        max_file_size: if config.accept_files {
-            Some(config.max_file_size as u64)
-        } else {
-            None
-        },
-        max_message_size: Some(config.max_message_size),
-        connection_mode: Some(config.connection_mode.clone()),
-    };
+    let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
     let bind_addr = format!("0.0.0.0:{}", config.port);
     let listener = server::bind(&bind_addr).await?;
+
+    tracing::info!("toq up on {}", address);
     println!("toq up on {address}");
     println!("  public key: {}", keypair.public_key());
     println!("  listening on {bind_addr}");
     println!("  connection mode: {}", config.connection_mode);
 
+    // Write state file
+    let state = serde_json::json!({
+        "status": "running",
+        "address": address.to_string(),
+        "port": config.port,
+        "connection_mode": config.connection_mode,
+        "pid": std::process::id(),
+    });
+    let _ = fs::write(state_path(), serde_json::to_string_pretty(&state)?);
+
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 let (tcp, peer_addr) = accept?;
-                println!("connection from {peer_addr}");
+                tracing::info!("connection from {}", peer_addr);
 
                 let tls_acceptor = tls_acceptor.clone();
                 let keypair_clone = keypair.clone();
@@ -255,58 +303,168 @@ async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
 
                 tokio::spawn(async move {
                     match server::accept_connection(
-                        tcp,
-                        &tls_acceptor,
-                        &keypair_clone,
-                        &address_clone,
-                        &card_clone,
-                        &features_clone,
-                        None,
+                        tcp, &tls_acceptor, &keypair_clone, &address_clone,
+                        &card_clone, &features_clone, None,
                     ).await {
                         Ok((conn, _stream)) => {
-                            println!(
-                                "connected: {} ({})",
-                                conn.peer_card.name, conn.peer_address
-                            );
+                            tracing::info!("connected: {} ({})", conn.peer_card.name, conn.peer_address);
+                            println!("connected: {} ({})", conn.peer_card.name, conn.peer_address);
                         }
                         Err(e) => {
-                            eprintln!("connection failed: {e}");
+                            tracing::warn!("connection from {peer_addr} failed: {e}");
                         }
                     }
                 });
             }
             _ = tokio::signal::ctrl_c() => {
+                tracing::info!("toq down (signal)");
                 println!("\ntoq down");
                 break;
             }
         }
     }
 
+    remove_pid();
+    let _ = fs::remove_file(state_path());
+    Ok(())
+}
+
+fn run_down() -> Result<(), Box<dyn std::error::Error>> {
+    match read_pid() {
+        Some(pid) => {
+            #[cfg(unix)]
+            {
+                use std::process::Command;
+                let status = Command::new("kill").arg(pid.to_string()).status()?;
+                if status.success() {
+                    println!("toq down (sent signal to PID {pid})");
+                    let _ = fs::remove_file(pid_path());
+                    let _ = fs::remove_file(state_path());
+                } else {
+                    eprintln!("failed to stop PID {pid}");
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("toq down not supported on this platform");
+            }
+        }
+        None => {
+            println!("toq is not running (no PID file found)");
+        }
+    }
+    Ok(())
+}
+
+fn run_status() -> Result<(), Box<dyn std::error::Error>> {
+    let sp = state_path();
+    if !sp.exists() {
+        println!("toq is not running");
+        return Ok(());
+    }
+    let data = fs::read_to_string(sp)?;
+    let state: serde_json::Value = serde_json::from_str(&data)?;
+    println!("toq status");
+    println!(
+        "  status:          {}",
+        state["status"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "  address:         {}",
+        state["address"].as_str().unwrap_or("unknown")
+    );
+    println!("  port:            {}", state["port"]);
+    println!(
+        "  connection mode: {}",
+        state["connection_mode"].as_str().unwrap_or("unknown")
+    );
+    println!("  pid:             {}", state["pid"]);
+    Ok(())
+}
+
+fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
+    let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+    if store.peers.is_empty() {
+        println!("No known peers");
+        return Ok(());
+    }
+    println!("{:<50} {:<12} LAST SEEN", "PUBLIC KEY", "STATUS");
+    for (key, record) in &store.peers {
+        let short_key = if key.len() > 45 { &key[..45] } else { key };
+        println!(
+            "{:<50} {:<12} {}",
+            short_key,
+            format!("{:?}", record.status).to_lowercase(),
+            record.last_seen
+        );
+    }
+    Ok(())
+}
+
+fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+    store.upsert(
+        &toq_core::crypto::PublicKey::from_encoded(agent)?,
+        "",
+        toq_core::keystore::PeerStatus::Blocked,
+    );
+    store.save(&keystore::peers_path())?;
+    println!("blocked {agent}");
+    Ok(())
+}
+
+fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+    let key = toq_core::crypto::PublicKey::from_encoded(agent)?;
+    let key_str = key.to_encoded();
+    store.peers.remove(&key_str);
+    store.save(&keystore::peers_path())?;
+    println!("unblocked {agent}");
+    Ok(())
+}
+
+fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
+    let log_dir = dirs_path().join(LOGS_DIR);
+    if log_dir.exists() {
+        for entry in fs::read_dir(&log_dir)? {
+            let entry = entry?;
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    println!("Logs cleared");
+    Ok(())
+}
+
+fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let lp = log_path();
+    if !lp.exists() {
+        println!("No logs found");
+        return Ok(());
+    }
+
+    if follow {
+        // Tail the file
+        let file = fs::File::open(&lp)?;
+        let reader = io::BufReader::new(file);
+        for line in reader.lines() {
+            println!("{}", line?);
+        }
+        println!("(end of log, --follow live tailing requires running daemon)");
+    } else {
+        let content = fs::read_to_string(&lp)?;
+        print!("{content}");
+    }
     Ok(())
 }
 
 async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !keystore::is_setup_complete() {
-        eprintln!("Setup not complete. Run `toq setup` first.");
-        std::process::exit(1);
-    }
+    require_setup();
 
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
     let address = Address::new("localhost", &config.agent_name)?;
     let target_addr: Address = target.parse()?;
-
-    let local_card = AgentCard {
-        name: config.agent_name.clone(),
-        description: None,
-        public_key: keypair.public_key().to_encoded(),
-        protocol_version: PROTOCOL_VERSION.into(),
-        capabilities: vec![],
-        accept_files: false,
-        max_file_size: None,
-        max_message_size: None,
-        connection_mode: None,
-    };
+    let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
     let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
@@ -320,7 +478,6 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
         info.peer_card.name, info.peer_address
     );
 
-    // Send message
     let msg_id = messaging::send_message(
         &mut stream,
         &keypair,
@@ -340,10 +497,8 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
 
     println!("sent message {msg_id}");
 
-    // Wait for ack
     let ack = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE)
         .await?;
-
     if ack.msg_type == MessageType::MessageAck {
         println!("ack received");
     } else {
@@ -354,10 +509,7 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
 }
 
 async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
-    if !keystore::is_setup_complete() {
-        eprintln!("Setup not complete. Run `toq setup` first.");
-        std::process::exit(1);
-    }
+    require_setup();
 
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
@@ -367,18 +519,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let address = Address::new("localhost", &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
-
-    let local_card = AgentCard {
-        name: config.agent_name.clone(),
-        description: None,
-        public_key: keypair.public_key().to_encoded(),
-        protocol_version: PROTOCOL_VERSION.into(),
-        capabilities: vec![],
-        accept_files: config.accept_files,
-        max_file_size: None,
-        max_message_size: Some(config.max_message_size),
-        connection_mode: Some(config.connection_mode.clone()),
-    };
+    let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
     let bind_addr = format!("0.0.0.0:{}", config.port);
@@ -399,76 +540,34 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
 
                 tokio::spawn(async move {
                     match server::accept_connection(
-                        tcp,
-                        &tls_acceptor,
-                        &keypair_clone,
-                        &address_clone,
-                        &card_clone,
-                        &features_clone,
-                        None,
+                        tcp, &tls_acceptor, &keypair_clone, &address_clone,
+                        &card_clone, &features_clone, None,
                     ).await {
                         Ok((info, mut stream)) => {
                             println!("connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
-
-                            // Receive loop
                             let mut seq = 2u64;
-                            loop {
-                                match framing::recv_envelope(
-                                    &mut stream,
-                                    &info.peer_public_key,
-                                    DEFAULT_MAX_MESSAGE_SIZE,
-                                ).await {
-                                    Ok(envelope) => {
-                                        match envelope.msg_type {
-                                            MessageType::MessageSend => {
-                                                let agent_msg = AgentMessage::from_envelope(&envelope);
-                                                println!("--- message from {} ---", agent_msg.from);
-                                                if let Some(body) = &agent_msg.body {
-                                                    println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
-                                                }
-                                                println!("---");
-
-                                                // Send ack
-                                                let _ = messaging::send_ack(
-                                                    &mut stream,
-                                                    &keypair_clone,
-                                                    &address_clone,
-                                                    &info.peer_address,
-                                                    &envelope.id,
-                                                    seq,
-                                                ).await;
-                                                seq += 1;
-                                            }
-                                            MessageType::SessionDisconnect => {
-                                                println!("peer disconnected");
-                                                break;
-                                            }
-                                            MessageType::Heartbeat => {
-                                                let _ = toq_core::connection::send_heartbeat_ack(
-                                                    &mut stream,
-                                                    &keypair_clone,
-                                                    &address_clone,
-                                                    &info.peer_address,
-                                                    &envelope.id,
-                                                    seq,
-                                                ).await;
-                                                seq += 1;
-                                            }
-                                            other => {
-                                                println!("received: {other:?}");
-                                            }
+                            while let Ok(envelope) = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE).await {
+                                match envelope.msg_type {
+                                    MessageType::MessageSend => {
+                                        let agent_msg = AgentMessage::from_envelope(&envelope);
+                                        println!("--- message from {} ---", agent_msg.from);
+                                        if let Some(body) = &agent_msg.body {
+                                            println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
                                         }
+                                        println!("---");
+                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
+                                        seq += 1;
                                     }
-                                    Err(e) => {
-                                        eprintln!("connection closed: {e}");
-                                        break;
+                                    MessageType::SessionDisconnect => { println!("peer disconnected"); break; }
+                                    MessageType::Heartbeat => {
+                                        let _ = toq_core::connection::send_heartbeat_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
+                                        seq += 1;
                                     }
+                                    other => { println!("received: {other:?}"); }
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("connection from {peer_addr} failed: {e}");
-                        }
+                        Err(e) => { eprintln!("connection from {peer_addr} failed: {e}"); }
                     }
                 });
             }
@@ -478,6 +577,5 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
     Ok(())
 }

@@ -117,6 +117,18 @@ pub const PEERS_FILE: &str = "peers.json";
 /// Default SAN for self-signed TLS certificates.
 pub const TLS_SELF_SIGNED_SAN: &str = "localhost";
 
+/// Subdirectory for logs within ~/.toq/.
+pub const LOGS_DIR: &str = "logs";
+
+/// Log filename.
+pub const LOG_FILE: &str = "toq.log";
+
+/// PID filename.
+pub const PID_FILE: &str = "toq.pid";
+
+/// State filename for status reporting.
+pub const STATE_FILE: &str = "state.json";
+
 /// DNS service prefix for toq TXT record queries.
 pub const DNS_SERVICE_PREFIX: &str = "_toq._tcp.";
 
