@@ -120,7 +120,7 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Setup => run_setup(),
-        Commands::Up { foreground: _ } => run_up().await,
+        Commands::Up { foreground } => run_up(foreground).await,
         Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
         Commands::Peers => run_peers(),
@@ -293,14 +293,50 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Agent name:      {agent_name}");
     println!("  Public key:      {}", keypair.public_key());
     println!("  Connection mode: {connection_mode}");
+    println!("  Adapter:         {adapter}");
     println!("  Address:         toq://localhost/{agent_name}");
+
+    if connection_mode == "open" {
+        println!("\n  ⚠ Open mode: any agent can connect without approval");
+        println!("    Consider using 'approval' mode for better security");
+    }
+
+    println!("\n--- Quick start ---");
+    println!("  toq up              start your endpoint");
+    println!("  toq status          check if running");
+    println!("  toq send <addr> <msg>  send a test message");
+    println!("  toq listen          print incoming messages");
+    println!("  toq peers           list known peers");
+    println!("  toq down            stop the endpoint");
+
+    println!("\n--- Network security ---");
+    println!("  Your endpoint listens on port 9009 by default");
+    println!("  If exposed to the internet, consider:");
+    println!("    - A firewall to restrict access");
+    println!("    - A reverse proxy for additional protection");
+    println!("    - Using 'approval' or 'allowlist' connection mode");
+
     println!("\nRun `toq up` to start your endpoint");
 
     Ok(())
 }
 
-async fn run_up() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     require_setup();
+
+    // Daemon mode: re-exec in background
+    if !foreground {
+        let exe = std::env::current_exe()?;
+        let log_file = fs::File::create(log_path())?;
+        let child = std::process::Command::new(exe)
+            .arg("up")
+            .arg("--foreground")
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file)
+            .spawn()?;
+        println!("toq started as daemon (PID {})", child.id());
+        return Ok(());
+    }
 
     if let Some(pid) = read_pid() {
         eprintln!("toq appears to be running (PID {pid}), run `toq down` first.");
@@ -586,7 +622,16 @@ fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-    let key = toq_core::crypto::PublicKey::from_encoded(agent)?;
+    let key = match toq_core::crypto::PublicKey::from_encoded(agent) {
+        Ok(k) => k,
+        Err(_) => {
+            let found = store.peers.iter().find(|(_, r)| r.address == agent);
+            match found {
+                Some((key_str, _)) => toq_core::crypto::PublicKey::from_encoded(key_str)?,
+                None => return Err(format!("unknown agent: {agent}").into()),
+            }
+        }
+    };
     let key_str = key.to_encoded();
     store.peers.remove(&key_str);
     store.save(&keystore::peers_path())?;
@@ -810,15 +855,66 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         "peers": peers,
     });
 
-    fs::write(path, serde_json::to_string_pretty(&bundle)?)?;
-    println!("exported to {path}");
+    let plaintext = serde_json::to_string_pretty(&bundle)?;
+
+    // Encrypt with passphrase
+    let passphrase = prompt("Export passphrase", "");
+    if passphrase.is_empty() {
+        return Err("passphrase cannot be empty".into());
+    }
+
+    use sha2::{Digest, Sha256};
+    let key_bytes = Sha256::digest(passphrase.as_bytes());
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
+    let mut nonce_bytes = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .map_err(|e| format!("encryption failed: {e}"))?;
+
+    use base64::prelude::*;
+    let output = serde_json::json!({
+        "encrypted": true,
+        "nonce": BASE64_STANDARD.encode(nonce_bytes),
+        "data": BASE64_STANDARD.encode(&ciphertext),
+    });
+
+    fs::write(path, serde_json::to_string_pretty(&output)?)?;
+    println!("exported to {path} (encrypted)");
 
     Ok(())
 }
 
 fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let data = fs::read_to_string(path)?;
-    let bundle: serde_json::Value = serde_json::from_str(&data)?;
+    let wrapper: serde_json::Value = serde_json::from_str(&data)?;
+
+    // Decrypt if encrypted
+    let bundle: serde_json::Value = if wrapper.get("encrypted").and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        let passphrase = prompt("Import passphrase", "");
+        use aes_gcm::aead::{Aead, KeyInit};
+        use aes_gcm::{Aes256Gcm, Nonce};
+        use base64::prelude::*;
+        use sha2::{Digest, Sha256};
+
+        let key_bytes = Sha256::digest(passphrase.as_bytes());
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
+        let nonce_bytes =
+            BASE64_STANDARD.decode(wrapper["nonce"].as_str().ok_or("missing nonce")?)?;
+        let ciphertext = BASE64_STANDARD.decode(wrapper["data"].as_str().ok_or("missing data")?)?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext.as_ref())
+            .map_err(|_| "decryption failed (wrong passphrase?)")?;
+        serde_json::from_slice(&plaintext)?
+    } else {
+        wrapper
+    };
 
     let identity = bundle["identity_key"]
         .as_str()
@@ -834,7 +930,6 @@ fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("missing config in backup")?;
     let peers = bundle["peers"].as_str().ok_or("missing peers in backup")?;
 
-    // Create directories
     let _ = fs::create_dir_all(dirs_path().join(toq_core::constants::KEYS_DIR));
     let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
 
