@@ -24,3 +24,4 @@ base64 = "0.22"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 inquire = "0.9"
+comfy-table = "7"

@@ -316,71 +316,59 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     let framework =
         inquire::Select::new("Which agent framework? (optional)", framework_options).prompt()?;
 
-    println!("\nGenerating Ed25519 identity keypair...");
+    println!("\nGenerating identity keypair and TLS certificate...");
     let keypair = Keypair::generate();
     keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
-    println!("  Saved to {}", keystore::identity_key_path().display());
-
-    println!("Generating self-signed TLS certificate...");
     keystore::generate_and_save_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
-    println!("  Saved to {}", keystore::tls_cert_path().display());
 
     let config = Config::default()
         .with_agent(agent_name.clone(), connection_mode.to_string())
         .with_adapter(adapter.to_string());
     config.save(&Config::default_path())?;
-    println!("Config saved to {}", Config::default_path().display());
 
     let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
 
-    println!("\n--- Setup complete ---");
-    println!("  Agent name:      {agent_name}");
-    println!("  Public key:      {}", keypair.public_key());
-    println!("  Connection mode: {connection_mode}");
-    println!("  Adapter:         {adapter}");
-    println!("  Address:         toq://localhost/{agent_name}");
+    let pub_key = keypair.public_key().to_encoded();
+    let pub_key_short = pub_key.strip_prefix("ed25519:").unwrap_or(&pub_key);
+
+    use comfy_table::{
+        ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED,
+    };
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL_CONDENSED);
+    table.apply_modifier(UTF8_ROUND_CORNERS);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["", "Setup complete"]);
+    table.add_row(vec!["Agent", &agent_name]);
+    table.add_row(vec!["Mode", connection_mode]);
+    table.add_row(vec!["Adapter", adapter]);
+    table.add_row(vec!["Address", &format!("toq://localhost/{agent_name}")]);
+    table.add_row(vec!["Public key", pub_key_short]);
+    println!("\n{table}");
 
     if connection_mode == "open" {
         println!("\n  ⚠ Open mode: any agent can connect without approval");
-        println!("    Consider using 'approval' mode for better security");
     }
-
-    println!("\n--- Quick start ---");
-    println!("  toq up              start your endpoint");
-    println!("  toq status          check if running");
-    println!("  toq send <addr> <msg>  send a test message");
-    println!("  toq listen          print incoming messages");
-    println!("  toq peers           list known peers");
-    println!("  toq down            stop the endpoint");
-
-    println!("\n--- Network security ---");
-    println!("  Your endpoint listens on port 9009 by default");
-    println!("  If exposed to the internet, consider:");
-    println!("    - A firewall to restrict access");
-    println!("    - A reverse proxy for additional protection");
-    println!("    - Using 'approval' or 'allowlist' connection mode");
-
-    println!("\n--- DNS discovery (optional) ---");
-    println!("  To make your agent discoverable via DNS, add a TXT record:");
-    println!(
-        "    _toq._tcp.yourdomain.com  \"v=toq1; key={}; agent={agent_name}\"",
-        keypair
-            .public_key()
-            .to_encoded()
-            .strip_prefix("ed25519:")
-            .unwrap_or("")
-    );
 
     if framework != "none / custom" {
-        println!("\n--- Framework integration ---");
-        println!("  toq SDKs and framework plugins are coming soon");
-        println!(
-            "  For now, configure your agent to receive messages via the {} adapter",
-            adapter
-        );
+        println!("\n  Framework SDKs and plugins are coming soon");
+        println!("  Your agent receives messages via the {adapter} adapter");
     }
 
-    println!("\nRun `toq up` to start your endpoint");
+    println!("\n  Quick start:");
+    println!("    toq up                    Start your endpoint");
+    println!("    toq send <addr> <msg>     Send a test message");
+    println!("    toq listen                Print incoming messages");
+    println!("    toq down                  Stop the endpoint");
+
+    println!("\n  Network security:");
+    println!("    Your endpoint listens on port 9009");
+    println!("    If exposed to the internet, use a firewall");
+    println!("    and 'approval' or 'allowlist' connection mode");
+
+    println!("\n  DNS discovery:");
+    println!("    Add a TXT record to make your agent discoverable:");
+    println!("    _toq._tcp.<domain>  \"v=toq1; key={pub_key_short}; agent={agent_name}\"");
 
     Ok(())
 }
