@@ -3,7 +3,30 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::prelude::*;
+use sha2::{Digest, Sha256};
+
 use toq_core::adapter::AgentMessage;
+use toq_core::card::AgentCard;
+use toq_core::config::{Config, dirs_path};
+use toq_core::constants::{
+    DEFAULT_CONNECTIONS_PER_IP_PER_SEC, DEFAULT_MAX_MESSAGE_SIZE, LOG_FILE, LOGS_DIR, PID_FILE,
+    PROTOCOL_VERSION, STATE_FILE,
+};
+use toq_core::crypto::Keypair;
+use toq_core::framing;
+use toq_core::keystore;
+use toq_core::messaging::{self, SendParams};
+use toq_core::negotiation::Features;
+use toq_core::policy::{ConnectionMode, PolicyEngine};
+use toq_core::ratelimit::RateLimiter;
+use toq_core::server;
+use toq_core::session::SessionStore;
+use toq_core::transport;
+use toq_core::types::{Address, MessageType};
 
 const LOGO_RAW: &str = r#"▄▄█████████████████▀▀▘
      ▄▄█▀▀▀
@@ -36,23 +59,6 @@ fn centered_logo() -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-use toq_core::card::AgentCard;
-use toq_core::config::{Config, dirs_path};
-use toq_core::constants::{
-    DEFAULT_CONNECTIONS_PER_IP_PER_SEC, DEFAULT_MAX_MESSAGE_SIZE, LOG_FILE, LOGS_DIR, PID_FILE,
-    PROTOCOL_VERSION, STATE_FILE,
-};
-use toq_core::crypto::Keypair;
-use toq_core::framing;
-use toq_core::keystore;
-use toq_core::messaging::{self, SendParams};
-use toq_core::negotiation::Features;
-use toq_core::policy::{ConnectionMode, PolicyEngine};
-use toq_core::ratelimit::RateLimiter;
-use toq_core::server;
-use toq_core::session::SessionStore;
-use toq_core::transport;
-use toq_core::types::{Address, MessageType};
 
 #[derive(Parser)]
 #[command(name = "toq", version, about = ABOUT)]
@@ -387,6 +393,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Daemon mode: re-exec in background
     if !foreground {
         let exe = std::env::current_exe()?;
+        let log_dir = dirs_path().join(LOGS_DIR);
+        let _ = fs::create_dir_all(&log_dir);
         let log_file = fs::File::create(log_path())?;
         let child = std::process::Command::new(exe)
             .arg("up")
@@ -844,6 +852,14 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
+    let policy_mode = match config.connection_mode.as_str() {
+        "open" => ConnectionMode::Open,
+        "allowlist" => ConnectionMode::Allowlist,
+        "dns-verified" => ConnectionMode::DnsVerified,
+        _ => ConnectionMode::Approval,
+    };
+    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(PolicyEngine::new(policy_mode)));
+
     let bind_addr = format!(
         "{}:{}",
         toq_core::constants::DEFAULT_BIND_ADDRESS,
@@ -863,12 +879,18 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
                 let address_clone = address.clone();
                 let card_clone = local_card.clone();
                 let features_clone = features.clone();
+                let policy_clone = policy.clone();
 
                 tokio::spawn(async move {
-                    match server::accept_connection(
-                        tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                        &card_clone, &features_clone, None,
-                    ).await {
+                    let accept_result = {
+                        let policy_guard = policy_clone.lock().await;
+                        server::accept_connection(
+                            tcp, &tls_acceptor, &keypair_clone, &address_clone,
+                            &card_clone, &features_clone, Some(&policy_guard),
+                        ).await
+                    };
+
+                    match accept_result {
                         Ok((info, mut stream)) => {
                             println!("connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
                             let mut seq = 2u64;
@@ -959,10 +981,7 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err("passphrase cannot be empty".into());
     }
 
-    use sha2::{Digest, Sha256};
     let key_bytes = Sha256::digest(passphrase.as_bytes());
-    use aes_gcm::aead::{Aead, KeyInit};
-    use aes_gcm::{Aes256Gcm, Nonce};
     let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
     let mut nonce_bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
@@ -971,7 +990,6 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| format!("encryption failed: {e}"))?;
 
-    use base64::prelude::*;
     let output = serde_json::json!({
         "encrypted": true,
         "nonce": BASE64_STANDARD.encode(nonce_bytes),
@@ -993,10 +1011,6 @@ fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         == Some(true)
     {
         let passphrase = prompt("Import passphrase", "");
-        use aes_gcm::aead::{Aead, KeyInit};
-        use aes_gcm::{Aes256Gcm, Nonce};
-        use base64::prelude::*;
-        use sha2::{Digest, Sha256};
 
         let key_bytes = Sha256::digest(passphrase.as_bytes());
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
