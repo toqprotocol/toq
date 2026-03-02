@@ -169,8 +169,8 @@ fn state_path() -> PathBuf {
 
 fn require_setup() {
     if !keystore::is_setup_complete() {
-        eprintln!("setup not complete");
-        eprintln!("  run `toq setup` to generate keys and create config");
+        eprintln!("Setup not complete");
+        eprintln!("  Run `toq setup` to generate keys and create config");
         std::process::exit(1);
     }
 }
@@ -275,10 +275,10 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("toq setup\n");
 
     if keystore::is_setup_complete() {
-        println!("setup already complete, re-running will overwrite existing keys and config");
+        println!("Setup already complete, re-running will overwrite existing keys and config");
         let answer = prompt("Continue?", "no");
         if !answer.starts_with('y') && !answer.starts_with('Y') {
-            println!("aborted");
+            println!("Aborted");
             return Ok(());
         }
     }
@@ -551,7 +551,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                     match accept_result {
                         Ok((info, mut stream)) => {
                             tracing::info!("connected: {} ({})", info.peer_card.name, info.peer_address);
-                            println!("connected: {} ({})", info.peer_card.name, info.peer_address);
+                            println!("Connected: {} ({})", info.peer_card.name, info.peer_address);
 
                             // Register session
                             {
@@ -663,17 +663,17 @@ fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = fs::remove_file(pid_path());
                     let _ = fs::remove_file(state_path());
                 } else {
-                    eprintln!("failed to stop PID {pid}");
+                    eprintln!("Failed to stop PID {pid}");
                 }
             }
             #[cfg(not(unix))]
             {
                 let _ = graceful;
-                eprintln!("toq down not supported on this platform");
+                eprintln!("Toq down not supported on this platform");
             }
         }
         None => {
-            println!("toq is not running (no PID file found)");
+            println!("Toq is not running (no PID file found)");
         }
     }
     Ok(())
@@ -682,7 +682,7 @@ fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
 fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     let sp = state_path();
     if !sp.exists() {
-        println!("toq is not running");
+        println!("Toq is not running");
         return Ok(());
     }
     let data = fs::read_to_string(sp)?;
@@ -727,7 +727,7 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
 fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
     let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
     if store.peers.is_empty() {
-        println!("no known peers");
+        println!("No known peers");
         return Ok(());
     }
     println!("{:<50} {:<12} LAST SEEN", "PUBLIC KEY", "STATUS");
@@ -759,7 +759,7 @@ fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
     store.upsert(&public_key, "", toq_core::keystore::PeerStatus::Blocked);
     store.save(&keystore::peers_path())?;
-    println!("blocked {agent}");
+    println!("Blocked {agent}");
     Ok(())
 }
 
@@ -778,7 +778,7 @@ fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
     let key_str = key.to_encoded();
     store.peers.remove(&key_str);
     store.save(&keystore::peers_path())?;
-    println!("unblocked {agent}");
+    println!("Unblocked {agent}");
     Ok(())
 }
 
@@ -790,14 +790,14 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
             let _ = fs::remove_file(entry.path());
         }
     }
-    println!("logs cleared");
+    println!("Logs cleared");
     Ok(())
 }
 
 fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lp = log_path();
     if !lp.exists() {
-        println!("no logs found");
+        println!("No logs found");
         return Ok(());
     }
 
@@ -837,7 +837,7 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
     let features = Features::default();
 
     let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
-    println!("connecting to {target_addr}...");
+    println!("Connecting to {target_addr}...");
 
     let (info, mut stream) =
         server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features).await?;
@@ -864,14 +864,14 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
     )
     .await?;
 
-    println!("sent message {msg_id}");
+    println!("Sent message {msg_id}");
 
     let ack = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE)
         .await?;
     if ack.msg_type == MessageType::MessageAck {
-        println!("ack received");
+        println!("Ack received");
     } else {
-        println!("unexpected response: {:?}", ack.msg_type);
+        println!("Unexpected response: {:?}", ack.msg_type);
     }
 
     Ok(())
@@ -907,7 +907,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let listener = server::bind(&bind_addr).await?;
     println!("toq listen on {address}");
     println!("  listening on {bind_addr}");
-    println!("  waiting for messages...\n");
+    println!("  Waiting for messages...\n");
 
     loop {
         tokio::select! {
@@ -931,7 +931,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
 
                     match accept_result {
                         Ok((info, mut stream)) => {
-                            println!("connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
+                            println!("Connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
                             let mut seq = 2u64;
                             while let Ok(envelope) = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE).await {
                                 match envelope.msg_type {
@@ -945,7 +945,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
                                         let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
                                         seq += 1;
                                     }
-                                    MessageType::SessionDisconnect => { println!("peer disconnected"); break; }
+                                    MessageType::SessionDisconnect => { println!("Peer disconnected"); break; }
                                     MessageType::Heartbeat => {
                                         let _ = toq_core::connection::send_heartbeat_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
                                         seq += 1;
@@ -959,7 +959,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             _ = tokio::signal::ctrl_c() => {
-                println!("\nstopped");
+                println!("\nStopped");
                 break;
             }
         }
@@ -981,7 +981,7 @@ fn run_rotate_keys() -> Result<(), Box<dyn std::error::Error>> {
     keystore::save_keypair(&new_keypair, &keystore::identity_key_path())?;
 
     // Update peer store with rotation info
-    println!("keys rotated");
+    println!("Keys rotated");
     println!("  old public key: {old_public}");
     println!("  new public key: {new_public}");
     println!("  rotation proof: {proof}");
@@ -1036,7 +1036,7 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     fs::write(path, serde_json::to_string_pretty(&output)?)?;
-    println!("exported to {path} (encrypted)");
+    println!("Exported to {path} (encrypted)");
 
     Ok(())
 }
@@ -1098,8 +1098,8 @@ fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let _ = fs::set_permissions(keystore::tls_key_path(), fs::Permissions::from_mode(0o600));
     }
 
-    println!("imported from {path}");
-    println!("run `toq up` to start with the restored identity");
+    println!("Imported from {path}");
+    println!("Run `toq up` to start with the restored identity");
 
     Ok(())
 }
@@ -1196,7 +1196,7 @@ fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
     let current = env!("CARGO_PKG_VERSION");
     println!("toq v{current}");
 
-    println!("checking for updates...");
+    println!("Checking for updates...");
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .user_agent("toq")
@@ -1219,12 +1219,12 @@ fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or("https://github.com/toqprotocol/toq/releases")
                     );
                 } else {
-                    println!("  already up to date");
+                    println!("  Already up to date");
                 }
             }
         }
         _ => {
-            println!("  could not check for updates");
+            println!("  Could not check for updates");
             println!("  visit https://github.com/toqprotocol/toq/releases");
         }
     }
