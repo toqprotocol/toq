@@ -505,6 +505,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         address.clone(),
         active_connections.clone(),
         total_messages.clone(),
+        policy.clone(),
+        sessions.clone(),
     );
     let api_address = api::DEFAULT_API_ADDRESS.to_string();
     tokio::spawn(async move {
@@ -562,7 +564,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                     tracing::info!("duplicate connection, closing old session {}", old_id);
                                     sess.remove(&old_id);
                                 }
-                                sess.register(&info.session_id, &info.peer_public_key);
+                                sess.register(&info.session_id, &info.peer_public_key, &info.peer_address.to_string());
                             }
                             conn_count.fetch_add(1, Ordering::Relaxed);
 

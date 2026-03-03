@@ -70,6 +70,11 @@ impl PublicKey {
         self.0.as_bytes()
     }
 
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let arr: [u8; 32] = bytes.try_into().ok()?;
+        ed25519_dalek::VerifyingKey::from_bytes(&arr).ok().map(Self)
+    }
+
     pub fn from_encoded(s: &str) -> Result<Self, Error> {
         let encoded = s
             .strip_prefix(ED25519_PREFIX)

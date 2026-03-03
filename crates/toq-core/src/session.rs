@@ -4,6 +4,15 @@ use std::time::Instant;
 use crate::constants::SESSION_RESUME_TIMEOUT;
 use crate::crypto::PublicKey;
 
+/// Info about an active connection, returned by `list`.
+pub struct ConnectionInfo {
+    pub session_id: String,
+    pub peer_address: String,
+    pub peer_public_key: String,
+    pub connected_at: Instant,
+    pub messages_exchanged: u64,
+}
+
 /// Tracks active sessions and handles duplicate connection detection.
 pub struct SessionStore {
     sessions: HashMap<String, SessionRecord>,
@@ -12,8 +21,11 @@ pub struct SessionStore {
 
 struct SessionRecord {
     peer_key: [u8; 32],
+    peer_address: String,
+    peer_public_key: String,
     created_at: Instant,
     last_sequence: u64,
+    messages_exchanged: u64,
 }
 
 struct ActivePeer {
@@ -29,14 +41,17 @@ impl SessionStore {
     }
 
     /// Register a new active session.
-    pub fn register(&mut self, session_id: &str, peer_key: &PublicKey) {
+    pub fn register(&mut self, session_id: &str, peer_key: &PublicKey, peer_address: &str) {
         let key_bytes = *peer_key.as_bytes();
         self.sessions.insert(
             session_id.to_string(),
             SessionRecord {
                 peer_key: key_bytes,
+                peer_address: peer_address.to_string(),
+                peer_public_key: peer_key.to_encoded(),
                 created_at: Instant::now(),
                 last_sequence: 0,
+                messages_exchanged: 0,
             },
         );
         self.active_peers.insert(
@@ -92,6 +107,27 @@ impl SessionStore {
         for id in expired {
             self.remove(&id);
         }
+    }
+
+    /// Increment the message count for a session.
+    pub fn increment_messages(&mut self, session_id: &str) {
+        if let Some(record) = self.sessions.get_mut(session_id) {
+            record.messages_exchanged += 1;
+        }
+    }
+
+    /// List all active connections.
+    pub fn list(&self) -> Vec<ConnectionInfo> {
+        self.sessions
+            .iter()
+            .map(|(id, r)| ConnectionInfo {
+                session_id: id.clone(),
+                peer_address: r.peer_address.clone(),
+                peer_public_key: r.peer_public_key.clone(),
+                connected_at: r.created_at,
+                messages_exchanged: r.messages_exchanged,
+            })
+            .collect()
     }
 }
 

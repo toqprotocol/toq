@@ -25,13 +25,25 @@ pub enum PolicyDecision {
     Reject,
 }
 
+/// Info about a pending approval request, returned by `list_pending`.
+pub struct PendingApproval {
+    pub public_key: Vec<u8>,
+    pub address: String,
+    pub requested_at: Instant,
+}
+
 /// Manages connection policy: blocklist, allowlist, approvals.
 pub struct PolicyEngine {
     mode: ConnectionMode,
     blocklist: HashSet<Vec<u8>>,
     allowlist: HashSet<Vec<u8>>,
     approved: HashSet<Vec<u8>>,
-    pending: HashMap<Vec<u8>, Instant>,
+    pending: HashMap<Vec<u8>, PendingInfo>,
+}
+
+struct PendingInfo {
+    address: String,
+    requested_at: Instant,
 }
 
 impl PolicyEngine {
@@ -109,8 +121,25 @@ impl PolicyEngine {
         self.pending.remove(key.as_bytes().as_slice());
     }
 
-    pub fn add_pending(&mut self, key: &PublicKey) {
-        self.pending.insert(key.as_bytes().to_vec(), Instant::now());
+    pub fn add_pending(&mut self, key: &PublicKey, address: &str) {
+        self.pending.insert(
+            key.as_bytes().to_vec(),
+            PendingInfo {
+                address: address.to_string(),
+                requested_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn list_pending(&self) -> Vec<PendingApproval> {
+        self.pending
+            .iter()
+            .map(|(key, info)| PendingApproval {
+                public_key: key.clone(),
+                address: info.address.clone(),
+                requested_at: info.requested_at,
+            })
+            .collect()
     }
 
     pub fn pending_count(&self) -> usize {

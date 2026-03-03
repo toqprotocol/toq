@@ -87,6 +87,37 @@ pub struct DiscoverResponse {
     pub agents: Vec<DiscoveredAgent>,
 }
 
+// ── Approvals ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalEntry {
+    pub id: String,
+    pub public_key: String,
+    pub address: String,
+    pub requested_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalsResponse {
+    pub approvals: Vec<ApprovalEntry>,
+}
+
+// ── Connections ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionEntry {
+    pub session_id: String,
+    pub peer_address: String,
+    pub peer_public_key: String,
+    pub connected_at: String,
+    pub messages_exchanged: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionsResponse {
+    pub connections: Vec<ConnectionEntry>,
+}
+
 // ── Config ──────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

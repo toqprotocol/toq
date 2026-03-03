@@ -34,6 +34,11 @@ pub fn router(state: ApiState) -> Router {
         // Discovery
         .route("/v1/discover", get(discover_dns))
         .route("/v1/discover/local", get(discover_local))
+        // Approvals
+        .route("/v1/approvals", get(list_approvals))
+        .route("/v1/approvals/{id}", post(resolve_approval))
+        // Connections
+        .route("/v1/connections", get(list_connections))
         // Daemon
         .route("/v1/health", get(health_check))
         .route("/v1/status", get(get_status))

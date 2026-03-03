@@ -556,7 +556,7 @@ fn policy_approval_deny() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     let kp = Keypair::generate();
-    engine.add_pending(&kp.public_key());
+    engine.add_pending(&kp.public_key(), "toq://test/peer");
     assert_eq!(engine.pending_count(), 1);
     engine.deny(&kp.public_key());
     assert_eq!(engine.pending_count(), 0);
@@ -1328,7 +1328,7 @@ fn session_register_and_resume() {
 
     let mut store = SessionStore::new();
     let kp = Keypair::generate();
-    store.register("sess-1", &kp.public_key());
+    store.register("sess-1", &kp.public_key(), "toq://test/agent");
     store.update_sequence("sess-1", 42);
 
     let seq = store.validate_resume("sess-1", &kp.public_key());
@@ -1342,7 +1342,7 @@ fn session_resume_wrong_key() {
     let mut store = SessionStore::new();
     let kp1 = Keypair::generate();
     let kp2 = Keypair::generate();
-    store.register("sess-1", &kp1.public_key());
+    store.register("sess-1", &kp1.public_key(), "toq://test/agent");
 
     assert!(store.validate_resume("sess-1", &kp2.public_key()).is_none());
 }
@@ -1353,7 +1353,7 @@ fn session_duplicate_detection() {
 
     let mut store = SessionStore::new();
     let kp = Keypair::generate();
-    store.register("sess-1", &kp.public_key());
+    store.register("sess-1", &kp.public_key(), "toq://test/agent");
 
     let dup = store.check_duplicate(&kp.public_key());
     assert_eq!(dup, Some("sess-1".to_string()));
@@ -1365,7 +1365,7 @@ fn session_remove() {
 
     let mut store = SessionStore::new();
     let kp = Keypair::generate();
-    store.register("sess-1", &kp.public_key());
+    store.register("sess-1", &kp.public_key(), "toq://test/agent");
     store.remove("sess-1");
 
     assert!(store.check_duplicate(&kp.public_key()).is_none());

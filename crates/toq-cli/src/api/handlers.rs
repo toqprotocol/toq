@@ -14,6 +14,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use toq_core::card::AgentCard;
 use toq_core::constants::{DEFAULT_CONTENT_TYPE, DEFAULT_MAX_MESSAGE_SIZE, PROTOCOL_VERSION};
+use toq_core::crypto::PublicKey;
 use toq_core::messaging::{self, SendParams};
 use toq_core::negotiation::Features;
 use toq_core::server;
@@ -290,6 +291,104 @@ pub async fn discover_local() -> Response {
     // mDNS discovery requires the mdns crate. Will be added when
     // mDNS support is implemented in toq-core.
     json_ok(DiscoverResponse { agents: vec![] })
+}
+
+// ── Approvals ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ApprovalDecision {
+    pub decision: String,
+}
+
+pub async fn list_approvals(State(state): State<ApiState>) -> Response {
+    let policy = state.policy.lock().await;
+    let approvals = policy
+        .list_pending()
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let pk = PublicKey::from_bytes(&p.public_key)
+                .map(|k| k.to_encoded())
+                .unwrap_or_default();
+            crate::api::types::ApprovalEntry {
+                id: format!("approval-{i}"),
+                public_key: pk,
+                address: p.address,
+                requested_at: format!("{}s ago", p.requested_at.elapsed().as_secs()),
+            }
+        })
+        .collect();
+    json_ok(crate::api::types::ApprovalsResponse { approvals })
+}
+
+pub async fn resolve_approval(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(decision): Json<ApprovalDecision>,
+) -> Response {
+    let policy = state.policy.lock().await;
+    let pending = policy.list_pending();
+    drop(policy);
+
+    // Find the approval by ID (approval-N format)
+    let index: Option<usize> = id.strip_prefix("approval-").and_then(|n| n.parse().ok());
+    let Some(idx) = index else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_REQUEST,
+            "Invalid approval ID",
+        );
+    };
+    let Some(approval) = pending.get(idx) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_REQUEST,
+            "Approval not found",
+        );
+    };
+
+    let pk = match PublicKey::from_bytes(&approval.public_key) {
+        Some(pk) => pk,
+        None => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                "Invalid key in pending approval",
+            );
+        }
+    };
+
+    let mut policy = state.policy.lock().await;
+    match decision.decision.as_str() {
+        "approve" => policy.approve(&pk),
+        "deny" => policy.deny(&pk),
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_REQUEST,
+                "Decision must be 'approve' or 'deny'",
+            );
+        }
+    }
+    StatusCode::OK.into_response()
+}
+
+// ── Connections ─────────────────────────────────────────────
+
+pub async fn list_connections(State(state): State<ApiState>) -> Response {
+    let sessions = state.sessions.lock().await;
+    let connections = sessions
+        .list()
+        .into_iter()
+        .map(|c| crate::api::types::ConnectionEntry {
+            session_id: c.session_id,
+            peer_address: c.peer_address,
+            peer_public_key: c.peer_public_key,
+            connected_at: format!("{}s ago", c.connected_at.elapsed().as_secs()),
+            messages_exchanged: c.messages_exchanged,
+        })
+        .collect();
+    json_ok(crate::api::types::ConnectionsResponse { connections })
 }
 
 // ── Daemon ──────────────────────────────────────────────────

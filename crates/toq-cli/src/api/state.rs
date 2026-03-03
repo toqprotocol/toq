@@ -6,6 +6,8 @@ use tokio::sync::{Mutex, broadcast};
 
 use toq_core::config::Config;
 use toq_core::crypto::Keypair;
+use toq_core::policy::PolicyEngine;
+use toq_core::session::SessionStore;
 use toq_core::types::Address;
 
 use crate::api::types::IncomingMessage;
@@ -23,6 +25,8 @@ pub struct ApiState {
     pub total_messages: Arc<AtomicUsize>,
     pub shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     pub message_tx: broadcast::Sender<IncomingMessage>,
+    pub policy: Arc<Mutex<PolicyEngine>>,
+    pub sessions: Arc<Mutex<SessionStore>>,
 }
 
 impl ApiState {
@@ -32,6 +36,8 @@ impl ApiState {
         address: Address,
         active_connections: Arc<AtomicUsize>,
         total_messages: Arc<AtomicUsize>,
+        policy: Arc<Mutex<PolicyEngine>>,
+        sessions: Arc<Mutex<SessionStore>>,
     ) -> Self {
         let (message_tx, _) = broadcast::channel(MESSAGE_CHANNEL_CAPACITY);
         Self {
@@ -42,6 +48,8 @@ impl ApiState {
             total_messages,
             shutdown_tx: Arc::new(Mutex::new(None)),
             message_tx,
+            policy,
+            sessions,
         }
     }
 }
