@@ -72,7 +72,20 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Interactive guided setup. Generates keys, creates config.
-    Setup,
+    Setup {
+        /// Run without prompts, using provided flags or defaults.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Agent name (default: agent).
+        #[arg(long)]
+        agent_name: Option<String>,
+        /// Connection mode: open, allowlist, approval (default: approval).
+        #[arg(long)]
+        connection_mode: Option<String>,
+        /// Message adapter: http, stdin, unix (default: http).
+        #[arg(long)]
+        adapter: Option<String>,
+    },
     /// Start the toq endpoint.
     Up {
         /// Run in the foreground (logs to stdout).
@@ -128,7 +141,12 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Setup => run_setup(),
+        Commands::Setup {
+            non_interactive,
+            agent_name,
+            connection_mode,
+            adapter,
+        } => run_setup(non_interactive, agent_name, connection_mode, adapter),
         Commands::Up { foreground } => run_up(foreground).await,
         Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
@@ -259,11 +277,19 @@ fn load_card(config: &Config, keypair: &Keypair) -> AgentCard {
 
 // --- Commands ---
 
-fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", centered_logo());
-    println!("toq setup\n");
-
+fn run_setup(
+    non_interactive: bool,
+    cli_agent_name: Option<String>,
+    cli_connection_mode: Option<String>,
+    cli_adapter: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if keystore::is_setup_complete() {
+        if non_interactive {
+            println!("Setup already complete");
+            return Ok(());
+        }
+        println!("{}", centered_logo());
+        println!("toq setup\n");
         let overwrite =
             inquire::Confirm::new("Setup already complete. Overwrite existing keys and config?")
                 .with_default(false)
@@ -272,66 +298,94 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
             println!("Aborted");
             return Ok(());
         }
+    } else if !non_interactive {
+        println!("{}", centered_logo());
+        println!("toq setup\n");
     }
 
-    let agent_name = inquire::Text::new("Agent name")
-        .with_default("agent")
-        .with_validator(|input: &str| match Address::new("localhost", input) {
-            Ok(_) => Ok(inquire::validator::Validation::Valid),
-            Err(e) => Ok(inquire::validator::Validation::Invalid(
-                e.to_string().into(),
-            )),
-        })
-        .prompt()?;
-
-    let mode_options = vec![
-        "approval  - You approve each new agent (recommended)",
-        "open      - Anyone can connect",
-        "allowlist - Only pre-approved agents",
-    ];
-    let mode_choice =
-        inquire::Select::new("Who can connect to your agent?", mode_options).prompt()?;
-    let connection_mode = if mode_choice.starts_with("open") {
-        "open"
-    } else if mode_choice.starts_with("allowlist") {
-        "allowlist"
+    let agent_name = if non_interactive {
+        cli_agent_name.unwrap_or_else(|| "agent".to_string())
     } else {
-        "approval"
+        inquire::Text::new("Agent name")
+            .with_default(&cli_agent_name.unwrap_or_else(|| "agent".to_string()))
+            .with_validator(|input: &str| match Address::new("localhost", input) {
+                Ok(_) => Ok(inquire::validator::Validation::Valid),
+                Err(e) => Ok(inquire::validator::Validation::Invalid(
+                    e.to_string().into(),
+                )),
+            })
+            .prompt()?
     };
 
-    let adapter_options = vec![
-        "http   - HTTP POST to a localhost URL (recommended)",
-        "stdin  - stdin/stdout JSON lines",
-        "unix   - Unix domain socket",
-    ];
-    let adapter_choice =
-        inquire::Select::new("How does your agent receive messages?", adapter_options).prompt()?;
-    let adapter = if adapter_choice.starts_with("stdin") {
-        "stdin"
-    } else if adapter_choice.starts_with("unix") {
-        "unix"
+    let connection_mode = if non_interactive {
+        cli_connection_mode.unwrap_or_else(|| "approval".to_string())
     } else {
-        "http"
+        let mode_options = vec![
+            "approval  - You approve each new agent (recommended)",
+            "open      - Anyone can connect",
+            "allowlist - Only pre-approved agents",
+        ];
+        let mode_choice =
+            inquire::Select::new("Who can connect to your agent?", mode_options).prompt()?;
+        if mode_choice.starts_with("open") {
+            "open".to_string()
+        } else if mode_choice.starts_with("allowlist") {
+            "allowlist".to_string()
+        } else {
+            "approval".to_string()
+        }
     };
 
-    let framework_options = vec!["none / custom", "LangChain", "CrewAI", "OpenClaw"];
-    let framework =
-        inquire::Select::new("Which agent framework? (optional)", framework_options).prompt()?;
+    let adapter = if non_interactive {
+        cli_adapter.unwrap_or_else(|| "http".to_string())
+    } else {
+        let adapter_options = vec![
+            "http   - HTTP POST to a localhost URL (recommended)",
+            "stdin  - stdin/stdout JSON lines",
+            "unix   - Unix domain socket",
+        ];
+        let adapter_choice =
+            inquire::Select::new("How does your agent receive messages?", adapter_options)
+                .prompt()?;
+        if adapter_choice.starts_with("stdin") {
+            "stdin".to_string()
+        } else if adapter_choice.starts_with("unix") {
+            "unix".to_string()
+        } else {
+            "http".to_string()
+        }
+    };
 
-    println!("\nGenerating identity keypair and TLS certificate...");
+    if !non_interactive {
+        let framework_options = vec!["none / custom", "LangChain", "CrewAI", "OpenClaw"];
+        let _ = inquire::Select::new("Which agent framework? (optional)", framework_options)
+            .prompt()?;
+    }
+
+    if non_interactive {
+        println!("Generating identity keypair and TLS certificate...");
+    } else {
+        println!("\nGenerating identity keypair and TLS certificate...");
+    }
     let keypair = Keypair::generate();
     keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
     keystore::generate_and_save_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
 
     let config = Config::default()
-        .with_agent(agent_name.clone(), connection_mode.to_string())
-        .with_adapter(adapter.to_string());
+        .with_agent(agent_name.clone(), connection_mode.clone())
+        .with_adapter(adapter.clone());
     config.save(&Config::default_path())?;
 
     let _ = fs::create_dir_all(dirs_path().join(LOGS_DIR));
 
     let pub_key = keypair.public_key().to_encoded();
     let pub_key_short = pub_key.strip_prefix("ed25519:").unwrap_or(&pub_key);
+
+    if non_interactive {
+        println!("Setup complete: toq://localhost/{agent_name}");
+        println!("Public key: {pub_key_short}");
+        return Ok(());
+    }
 
     use comfy_table::{
         ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL_CONDENSED,
@@ -342,19 +396,14 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(vec!["", "Setup complete"]);
     table.add_row(vec!["Agent", &agent_name]);
-    table.add_row(vec!["Mode", connection_mode]);
-    table.add_row(vec!["Adapter", adapter]);
+    table.add_row(vec!["Mode", &connection_mode]);
+    table.add_row(vec!["Adapter", &adapter]);
     table.add_row(vec!["Address", &format!("toq://localhost/{agent_name}")]);
     table.add_row(vec!["Public key", pub_key_short]);
     println!("\n{table}");
 
     if connection_mode == "open" {
         println!("\n  ⚠ Open mode: any agent can connect without approval");
-    }
-
-    if framework != "none / custom" {
-        println!("\n  Framework SDKs and plugins are coming soon");
-        println!("  Your agent receives messages via the {adapter} adapter");
     }
 
     println!("\n  Quick start:");
