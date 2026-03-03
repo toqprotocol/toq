@@ -31,6 +31,7 @@ pub struct Config {
     pub log_max_size_mb: u32,
     pub thread_cleanup_days: u32,
     pub mdns_enabled: bool,
+    pub api_port: u16,
     pub adapter: String,
     #[serde(rename = "adapter.http", skip_serializing_if = "Option::is_none")]
     pub adapter_http: Option<HttpAdapterConfig>,
@@ -81,6 +82,7 @@ impl Default for Config {
             log_max_size_mb: LOG_MAX_SIZE_MB,
             thread_cleanup_days: THREAD_CLEANUP_DAYS,
             mdns_enabled: false,
+            api_port: DEFAULT_API_PORT,
             adapter: "http".into(),
             adapter_http: None,
             adapter_grpc: None,

@@ -15,8 +15,6 @@ use axum::routing::{get, post};
 
 use crate::api::handlers::*;
 
-pub const DEFAULT_API_ADDRESS: &str = "127.0.0.1:9010";
-
 pub fn router(state: ApiState) -> Router {
     Router::new()
         // Messages

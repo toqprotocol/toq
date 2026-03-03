@@ -511,7 +511,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let message_tx = api_state.message_tx.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
-    let api_address = api::DEFAULT_API_ADDRESS.to_string();
+    let api_address = format!("127.0.0.1:{}", config.api_port);
     tokio::spawn(async move {
         if let Err(e) = api::serve(api_state, &api_address).await {
             tracing::warn!("local API server error: {e}");

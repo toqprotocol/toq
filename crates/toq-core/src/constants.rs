@@ -5,6 +5,7 @@ pub const PROTOCOL_VERSION: &str = "0.1";
 
 /// Default port for toq endpoints.
 pub const DEFAULT_PORT: u16 = 9009;
+pub const DEFAULT_API_PORT: u16 = 9010;
 
 /// Magic bytes sent at the start of every toq connection: ASCII "TOQ" + version byte 0x01.
 pub const MAGIC_BYTES: [u8; 4] = [0x54, 0x4F, 0x51, 0x01];

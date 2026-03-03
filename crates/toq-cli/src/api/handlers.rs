@@ -922,3 +922,224 @@ pub async fn get_agent_card(State(state): State<ApiState>) -> Response {
         connection_mode: Some(config.connection_mode.clone()),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn test_state() -> ApiState {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use tokio::sync::Mutex;
+        use toq_core::config::Config;
+        use toq_core::crypto::Keypair;
+        use toq_core::policy::{ConnectionMode, PolicyEngine};
+        use toq_core::session::SessionStore;
+        use toq_core::types::Address;
+
+        let keypair = Keypair::generate();
+        let address = Address::new("localhost", "test-agent").unwrap();
+        let policy = Arc::new(Mutex::new(PolicyEngine::new(ConnectionMode::Approval)));
+        let sessions = Arc::new(Mutex::new(SessionStore::new()));
+
+        ApiState::new(
+            Config::default(),
+            keypair,
+            address,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            policy,
+            sessions,
+        )
+    }
+
+    async fn get_json(path: &str) -> (u16, serde_json::Value) {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, body)
+    }
+
+    async fn post_json(path: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(Request::get("/v1/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn status_returns_running() {
+        let (status, body) = get_json("/v1/status").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["status"], "running");
+        assert_eq!(body["address"], "toq://localhost/test-agent");
+        assert!(body["public_key"].as_str().unwrap().starts_with("ed25519:"));
+        assert!(body["version"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn peers_returns_empty() {
+        let (status, body) = get_json("/v1/peers").await;
+        assert_eq!(status, 200);
+        assert!(body["peers"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn approvals_returns_empty() {
+        let (status, body) = get_json("/v1/approvals").await;
+        assert_eq!(status, 200);
+        assert!(body["approvals"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn connections_returns_empty() {
+        let (status, body) = get_json("/v1/connections").await;
+        assert_eq!(status, 200);
+        assert!(body["connections"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn card_returns_agent_info() {
+        let (status, body) = get_json("/v1/card").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["name"], "agent");
+        assert!(body["public_key"].as_str().unwrap().starts_with("ed25519:"));
+        assert_eq!(body["protocol_version"], "0.1");
+    }
+
+    #[tokio::test]
+    async fn config_returns_json() {
+        let (status, body) = get_json("/v1/config").await;
+        assert_eq!(status, 200);
+        assert!(body["config"].is_object());
+        assert_eq!(body["config"]["agent_name"], "agent");
+    }
+
+    #[tokio::test]
+    async fn send_message_invalid_address() {
+        let (status, body) = post_json(
+            "/v1/messages",
+            serde_json::json!({"to": "not-a-toq-address"}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert_eq!(body["error"]["code"], "invalid_address");
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_501() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/messages/fake-id/cancel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 501);
+    }
+
+    #[tokio::test]
+    async fn thread_returns_empty() {
+        let (status, body) = get_json("/v1/threads/thr-123").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["thread_id"], "thr-123");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn discover_dns_returns_empty() {
+        let (status, body) = get_json("/v1/discover?host=example.com").await;
+        assert_eq!(status, 200);
+        assert!(body["agents"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn discover_local_returns_empty() {
+        let (status, body) = get_json("/v1/discover/local").await;
+        assert_eq!(status, 200);
+        assert!(body["agents"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_approval_bad_id() {
+        let (status, body) = post_json(
+            "/v1/approvals/not-a-key",
+            serde_json::json!({"decision": "approve"}),
+        )
+        .await;
+        assert_eq!(status, 404);
+        assert_eq!(body["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn block_peer_bad_key() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/peers/not-a-key/block")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn upgrade_check_returns_version() {
+        let (status, body) = get_json("/v1/upgrade/check").await;
+        assert_eq!(status, 200);
+        assert!(body["current_version"].as_str().is_some());
+        assert!(body["up_to_date"].as_bool().is_some());
+    }
+
+    #[tokio::test]
+    async fn config_update_invalid() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"port": "not-a-number"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+}
