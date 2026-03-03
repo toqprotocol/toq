@@ -77,6 +77,22 @@ pub async fn send_message(
     };
 
     let config = state.config.lock().await;
+
+    // Check message size
+    if let Some(ref body) = req.body {
+        let size = serde_json::to_vec(body).map(|v| v.len()).unwrap_or(0);
+        if size > config.max_message_size {
+            return error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ERR_MESSAGE_TOO_LARGE,
+                format!(
+                    "Message body is {} bytes, max is {}",
+                    size, config.max_message_size
+                ),
+            );
+        }
+    }
+
     let local_card = AgentCard {
         name: config.agent_name.clone(),
         description: None,
@@ -360,7 +376,7 @@ pub async fn resolve_approval(
         Err(_) => {
             return error_response(
                 StatusCode::NOT_FOUND,
-                ERR_INVALID_REQUEST,
+                ERR_NOT_FOUND,
                 "Invalid approval ID (must be an encoded public key)",
             );
         }

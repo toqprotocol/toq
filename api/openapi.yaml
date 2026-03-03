@@ -130,6 +130,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "501":
+          description: Not yet implemented (requires connection pooling).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/messages/stream:
     post:
@@ -177,6 +183,10 @@ paths:
     get:
       operationId: getThread
       summary: Get messages in a thread.
+      description: |
+        Returns messages in the thread. In v1, the daemon does not persist
+        messages. SDKs should track thread history client-side from the
+        SSE stream.
       parameters:
         - name: thread_id
           in: path
@@ -186,17 +196,11 @@ paths:
           description: Thread ID.
       responses:
         "200":
-          description: Messages in the thread.
+          description: Messages in the thread (may be empty in v1).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-        "404":
-          description: Thread not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Peers ─────────────────────────────────────────────────
 
@@ -353,7 +357,7 @@ paths:
     get:
       operationId: healthCheck
       summary: Health check.
-      description: Lightweight probe for load balancers. Always unauthenticated.
+      description: Lightweight health probe for load balancers and monitoring.
       responses:
         "200":
           description: Daemon is healthy.
@@ -399,6 +403,9 @@ paths:
     get:
       operationId: getLogs
       summary: Get log entries.
+      description: |
+        Returns recent log entries. The follow parameter is reserved
+        for future SSE streaming support.
       parameters:
         - name: follow
           in: query
@@ -408,14 +415,11 @@ paths:
           description: Stream log entries in real time via SSE.
       responses:
         "200":
-          description: Log entries (JSON array or SSE stream when follow=true).
+          description: Log entries.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogsResponse"
-            text/event-stream:
-              schema:
-                $ref: "#/components/schemas/LogEntry"
     delete:
       operationId: clearLogs
       summary: Delete all log entries.
@@ -1006,7 +1010,7 @@ components:
       properties:
         data:
           type: string
-          description: Encrypted backup data (base64-encoded).
+          description: Encrypted backup as a JSON string containing nonce and ciphertext.
 
     BackupImportRequest:
       type: object
@@ -1019,7 +1023,7 @@ components:
           description: Passphrase to decrypt the backup.
         data:
           type: string
-          description: Encrypted backup data (base64-encoded).
+          description: Encrypted backup as a JSON string (from export).
 
     # ── Config ──────────────────────────────────────────────
 

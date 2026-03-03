@@ -238,8 +238,10 @@ pub struct ApiErrorBody {
 
 pub const ERR_INVALID_REQUEST: &str = "invalid_request";
 pub const ERR_INVALID_ADDRESS: &str = "invalid_address";
+pub const ERR_NOT_FOUND: &str = "not_found";
 pub const ERR_NOT_REACHABLE: &str = "not_reachable";
 pub const ERR_DELIVERY_TIMEOUT: &str = "delivery_timeout";
+pub const ERR_MESSAGE_TOO_LARGE: &str = "message_too_large";
 pub const ERR_INVALID_CONFIG: &str = "invalid_config";
 pub const ERR_INVALID_PASSPHRASE: &str = "invalid_passphrase";
 
