@@ -10,6 +10,8 @@ use base64::prelude::*;
 use sha2::{Digest, Sha256};
 
 use toq_core::adapter::AgentMessage;
+
+mod api;
 use toq_core::card::AgentCard;
 use toq_core::config::{Config, dirs_path};
 use toq_core::constants::{
@@ -495,6 +497,22 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         );
     };
     update_state();
+
+    // Start local API server
+    let api_state = api::ApiState {
+        config: std::sync::Arc::new(tokio::sync::Mutex::new(config.clone())),
+        keypair: std::sync::Arc::new(keypair.clone()),
+        address: std::sync::Arc::new(address.clone()),
+        active_connections: active_connections.clone(),
+        total_messages: total_messages.clone(),
+        shutdown_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+    };
+    let api_address = api::DEFAULT_API_ADDRESS.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = api::serve(api_state, &api_address).await {
+            tracing::warn!("local API server error: {e}");
+        }
+    });
 
     loop {
         tokio::select! {
