@@ -2,11 +2,16 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 use toq_core::config::Config;
 use toq_core::crypto::Keypair;
 use toq_core::types::Address;
+
+use crate::api::types::IncomingMessage;
+
+/// Channel capacity for incoming message broadcast.
+const MESSAGE_CHANNEL_CAPACITY: usize = 256;
 
 /// Shared state accessible by all API handlers.
 #[derive(Clone)]
@@ -17,4 +22,26 @@ pub struct ApiState {
     pub active_connections: Arc<AtomicUsize>,
     pub total_messages: Arc<AtomicUsize>,
     pub shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    pub message_tx: broadcast::Sender<IncomingMessage>,
+}
+
+impl ApiState {
+    pub fn new(
+        config: Config,
+        keypair: Keypair,
+        address: Address,
+        active_connections: Arc<AtomicUsize>,
+        total_messages: Arc<AtomicUsize>,
+    ) -> Self {
+        let (message_tx, _) = broadcast::channel(MESSAGE_CHANNEL_CAPACITY);
+        Self {
+            config: Arc::new(Mutex::new(config)),
+            keypair: Arc::new(keypair),
+            address: Arc::new(address),
+            active_connections,
+            total_messages,
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            message_tx,
+        }
+    }
 }

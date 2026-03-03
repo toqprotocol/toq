@@ -499,14 +499,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     update_state();
 
     // Start local API server
-    let api_state = api::ApiState {
-        config: std::sync::Arc::new(tokio::sync::Mutex::new(config.clone())),
-        keypair: std::sync::Arc::new(keypair.clone()),
-        address: std::sync::Arc::new(address.clone()),
-        active_connections: active_connections.clone(),
-        total_messages: total_messages.clone(),
-        shutdown_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-    };
+    let api_state = api::ApiState::new(
+        config.clone(),
+        keypair.clone(),
+        address.clone(),
+        active_connections.clone(),
+        total_messages.clone(),
+    );
     let api_address = api::DEFAULT_API_ADDRESS.to_string();
     tokio::spawn(async move {
         if let Err(e) = api::serve(api_state, &api_address).await {

@@ -2,6 +2,50 @@
 
 use serde::{Deserialize, Serialize};
 
+// ── Messages ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SendMessageRequest {
+    pub to: String,
+    pub body: Option<serde_json::Value>,
+    pub thread_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SendMessageResponse {
+    pub id: String,
+    pub status: &'static str,
+    pub thread_id: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IncomingMessage {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    pub timestamp: String,
+}
+
+// ── Threads ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ThreadResponse {
+    pub thread_id: String,
+    pub messages: Vec<IncomingMessage>,
+}
+
 // ── Status ──────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -28,6 +72,19 @@ pub struct PeerEntry {
 #[derive(Debug, Serialize)]
 pub struct PeersResponse {
     pub peers: Vec<PeerEntry>,
+}
+
+// ── Discovery ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct DiscoveredAgent {
+    pub address: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscoverResponse {
+    pub agents: Vec<DiscoveredAgent>,
 }
 
 // ── Config ──────────────────────────────────────────────────
@@ -86,6 +143,16 @@ pub struct DiagnosticsResponse {
     pub issues: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UpgradeCheckResponse {
+    pub current_version: &'static str,
+    pub up_to_date: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+}
+
 // ── Keys ────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -93,6 +160,36 @@ pub struct KeyRotationResponse {
     pub old_public_key: String,
     pub new_public_key: String,
     pub rotation_proof: String,
+}
+
+// ── Backup ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct BackupExportRequest {
+    pub passphrase: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupExportResponse {
+    pub data: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BackupImportRequest {
+    pub passphrase: String,
+    pub data: String,
+}
+
+// ── Shutdown ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ShutdownRequest {
+    #[serde(default = "default_graceful")]
+    pub graceful: bool,
+}
+
+fn default_graceful() -> bool {
+    true
 }
 
 // ── Error ───────────────────────────────────────────────────
@@ -109,16 +206,14 @@ pub struct ApiErrorBody {
 }
 
 pub const ERR_INVALID_REQUEST: &str = "invalid_request";
+pub const ERR_INVALID_ADDRESS: &str = "invalid_address";
+pub const ERR_NOT_REACHABLE: &str = "not_reachable";
 pub const ERR_INVALID_CONFIG: &str = "invalid_config";
+pub const ERR_INVALID_PASSPHRASE: &str = "invalid_passphrase";
 
-// ── Shutdown ────────────────────────────────────────────────
+pub const STATUS_QUEUED: &str = "queued";
+pub const STATUS_DELIVERED: &str = "delivered";
 
-#[derive(Debug, Deserialize)]
-pub struct ShutdownRequest {
-    #[serde(default = "default_graceful")]
-    pub graceful: bool,
-}
-
-fn default_graceful() -> bool {
-    true
-}
+/// GitHub releases API URL for upgrade checks.
+pub const RELEASES_API_URL: &str = "https://api.github.com/repos/toqprotocol/toq/releases/latest";
+pub const RELEASES_FALLBACK_URL: &str = "https://github.com/toqprotocol/toq/releases";
