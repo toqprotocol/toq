@@ -24,6 +24,9 @@ use toq_core::{framing, keystore};
 use crate::api::state::ApiState;
 use crate::api::types::*;
 
+/// First message sequence after handshake completes.
+const INITIAL_MESSAGE_SEQUENCE: u64 = 2;
+
 // ── Helpers ─────────────────────────────────────────────────
 
 fn error_response(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
@@ -80,8 +83,12 @@ pub async fn send_message(
         public_key: state.keypair.public_key().to_encoded(),
         protocol_version: PROTOCOL_VERSION.into(),
         capabilities: Vec::new(),
-        accept_files: false,
-        max_file_size: None,
+        accept_files: config.accept_files,
+        max_file_size: if config.accept_files {
+            Some(config.max_file_size as u64)
+        } else {
+            None
+        },
         max_message_size: Some(config.max_message_size),
         connection_mode: Some(config.connection_mode.clone()),
     };
@@ -121,7 +128,7 @@ pub async fn send_message(
         SendParams {
             from: &state.address,
             to: std::slice::from_ref(&target_addr),
-            sequence: 2,
+            sequence: INITIAL_MESSAGE_SEQUENCE,
             body: req.body,
             thread_id: Some(thread_id.clone()),
             reply_to: req.reply_to,
@@ -145,9 +152,11 @@ pub async fn send_message(
 
     state.total_messages.fetch_add(1, Ordering::Relaxed);
 
+    let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
+
     if params.wait {
         let timeout = Duration::from_secs(params.timeout as u64);
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             timeout,
             framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE),
         )
@@ -170,11 +179,28 @@ pub async fn send_message(
             ),
             Err(_) => error_response(
                 StatusCode::GATEWAY_TIMEOUT,
-                "delivery_timeout",
+                ERR_DELIVERY_TIMEOUT,
                 "No ack received within timeout",
             ),
-        }
+        };
+        let _ = toq_core::connection::send_disconnect(
+            &mut stream,
+            &state.keypair,
+            &state.address,
+            &target_addr,
+            next_seq,
+        )
+        .await;
+        result
     } else {
+        let _ = toq_core::connection::send_disconnect(
+            &mut stream,
+            &state.keypair,
+            &state.address,
+            &target_addr,
+            next_seq,
+        )
+        .await;
         (
             StatusCode::ACCEPTED,
             Json(SendMessageResponse {
@@ -202,7 +228,11 @@ pub async fn stream_messages(
 pub async fn cancel_message(Path(_id): Path<String>) -> Response {
     // Cancel requires tracking which connection a message was sent on.
     // Will be implemented with connection pooling.
-    StatusCode::OK.into_response()
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        ERR_INVALID_REQUEST,
+        "Message cancellation requires connection pooling (not yet implemented)",
+    )
 }
 
 pub async fn send_streaming_message(
@@ -305,16 +335,15 @@ pub async fn list_approvals(State(state): State<ApiState>) -> Response {
     let approvals = policy
         .list_pending()
         .into_iter()
-        .enumerate()
-        .map(|(i, p)| {
+        .map(|p| {
             let pk = PublicKey::from_bytes(&p.public_key)
                 .map(|k| k.to_encoded())
                 .unwrap_or_default();
             crate::api::types::ApprovalEntry {
-                id: format!("approval-{i}"),
+                id: pk.clone(),
                 public_key: pk,
                 address: p.address,
-                requested_at: format!("{}s ago", p.requested_at.elapsed().as_secs()),
+                requested_at: p.requested_at,
             }
         })
         .collect();
@@ -326,34 +355,13 @@ pub async fn resolve_approval(
     Path(id): Path<String>,
     Json(decision): Json<ApprovalDecision>,
 ) -> Response {
-    let policy = state.policy.lock().await;
-    let pending = policy.list_pending();
-    drop(policy);
-
-    // Find the approval by ID (approval-N format)
-    let index: Option<usize> = id.strip_prefix("approval-").and_then(|n| n.parse().ok());
-    let Some(idx) = index else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            ERR_INVALID_REQUEST,
-            "Invalid approval ID",
-        );
-    };
-    let Some(approval) = pending.get(idx) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            ERR_INVALID_REQUEST,
-            "Approval not found",
-        );
-    };
-
-    let pk = match PublicKey::from_bytes(&approval.public_key) {
-        Some(pk) => pk,
-        None => {
+    let pk = match PublicKey::from_encoded(&id) {
+        Ok(pk) => pk,
+        Err(_) => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::NOT_FOUND,
                 ERR_INVALID_REQUEST,
-                "Invalid key in pending approval",
+                "Invalid approval ID (must be an encoded public key)",
             );
         }
     };
@@ -384,7 +392,7 @@ pub async fn list_connections(State(state): State<ApiState>) -> Response {
             session_id: c.session_id,
             peer_address: c.peer_address,
             peer_public_key: c.peer_public_key,
-            connected_at: format!("{}s ago", c.connected_at.elapsed().as_secs()),
+            connected_at: c.connected_at,
             messages_exchanged: c.messages_exchanged,
         })
         .collect();
@@ -429,10 +437,17 @@ pub async fn get_logs() -> Response {
     let entries = content
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|line| LogEntry {
-            timestamp: String::new(),
-            level: String::new(),
-            message: line.to_string(),
+        .map(|line| {
+            // tracing-appender format: "YYYY-MM-DDTHH:MM:SS LEVEL message"
+            let mut parts = line.splitn(3, ' ');
+            let timestamp = parts.next().unwrap_or_default().to_string();
+            let level = parts.next().unwrap_or_default().to_lowercase();
+            let message = parts.next().unwrap_or(line).to_string();
+            LogEntry {
+                timestamp,
+                level,
+                message,
+            }
         })
         .collect();
     json_ok(LogsResponse { entries })
@@ -547,11 +562,25 @@ pub async fn check_upgrade() -> Response {
 
 // ── Keys ────────────────────────────────────────────────────
 
-pub async fn rotate_keys(State(state): State<ApiState>) -> Response {
-    let old_public = state.keypair.public_key().to_encoded();
+pub async fn rotate_keys(State(_state): State<ApiState>) -> Response {
+    // Load the current on-disk keypair to ensure proof chain integrity.
+    // If someone already rotated without restarting, the on-disk key
+    // differs from the in-memory key, and we must use the on-disk one.
+    let current_keypair = match keystore::load_keypair(&keystore::identity_key_path()) {
+        Ok(kp) => kp,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                format!("Cannot load current keys: {e}"),
+            );
+        }
+    };
+
+    let old_public = current_keypair.public_key().to_encoded();
     let new_keypair = toq_core::crypto::Keypair::generate();
     let new_public = new_keypair.public_key();
-    let proof = toq_core::crypto::generate_rotation_proof(&state.keypair, &new_public);
+    let proof = toq_core::crypto::generate_rotation_proof(&current_keypair, &new_public);
 
     if let Err(e) = keystore::save_keypair(&new_keypair, &keystore::identity_key_path()) {
         return error_response(
@@ -584,11 +613,46 @@ pub async fn export_backup(Json(req): Json<BackupExportRequest>) -> Response {
         );
     }
 
-    let identity = std::fs::read_to_string(keystore::identity_key_path()).unwrap_or_default();
-    let tls_cert = std::fs::read_to_string(keystore::tls_cert_path()).unwrap_or_default();
-    let tls_key = std::fs::read_to_string(keystore::tls_key_path()).unwrap_or_default();
-    let config =
-        std::fs::read_to_string(toq_core::config::Config::default_path()).unwrap_or_default();
+    let identity = match std::fs::read_to_string(keystore::identity_key_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                format!("Cannot read identity key: {e}"),
+            );
+        }
+    };
+    let tls_cert = match std::fs::read_to_string(keystore::tls_cert_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                format!("Cannot read TLS cert: {e}"),
+            );
+        }
+    };
+    let tls_key = match std::fs::read_to_string(keystore::tls_key_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                format!("Cannot read TLS key: {e}"),
+            );
+        }
+    };
+    let config = match std::fs::read_to_string(toq_core::config::Config::default_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                format!("Cannot read config: {e}"),
+            );
+        }
+    };
     let peers = std::fs::read_to_string(keystore::peers_path()).unwrap_or_else(|_| "{}".into());
 
     let bundle = serde_json::json!({

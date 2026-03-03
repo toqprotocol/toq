@@ -508,6 +508,9 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         policy.clone(),
         sessions.clone(),
     );
+    let message_tx = api_state.message_tx.clone();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
     let api_address = api::DEFAULT_API_ADDRESS.to_string();
     tokio::spawn(async move {
         if let Err(e) = api::serve(api_state, &api_address).await {
@@ -541,6 +544,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let adapter_url_clone = adapter_url.clone();
                 let conn_count = active_connections.clone();
                 let msg_count = total_messages.clone();
+                let msg_tx = message_tx.clone();
 
                 tokio::spawn(async move {
                     // Lock policy only for accept_connection, release after
@@ -578,6 +582,18 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         tracing::info!("message from {}: {}", agent_msg.from, agent_msg.id);
                                         msg_count.fetch_add(1, Ordering::Relaxed);
+
+                                        // Broadcast to SSE subscribers
+                                        let _ = msg_tx.send(api::types::IncomingMessage {
+                                            id: agent_msg.id.clone(),
+                                            msg_type: agent_msg.msg_type.clone(),
+                                            from: agent_msg.from.clone(),
+                                            body: agent_msg.body.clone(),
+                                            thread_id: agent_msg.thread_id.clone(),
+                                            reply_to: agent_msg.reply_to.clone(),
+                                            content_type: agent_msg.content_type.clone(),
+                                            timestamp: toq_core::now_utc(),
+                                        });
 
                                         // Deliver to adapter
                                         if let Some(ref url) = adapter_url_clone {
@@ -635,6 +651,11 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("toq down (signal)");
                 println!("\ntoq down");
+                break;
+            }
+            _ = &mut shutdown_rx => {
+                tracing::info!("toq down (API shutdown)");
+                println!("\ntoq down (API)");
                 break;
             }
         }

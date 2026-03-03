@@ -8,10 +8,7 @@ info:
     between local agent code and the daemon.
 
     Default bind: 127.0.0.1:9010 (localhost only).
-    Configurable via [api] section in ~/.toq/config.toml.
-    When bound to a non-localhost address, a bearer token is required.
-
-    Connection priority: TOQ_API_URL env var > explicit SDK param > config file.
+    Localhost-only. No authentication required (OS protects localhost).
   version: 0.1.0
   license:
     name: Apache-2.0
@@ -21,9 +18,7 @@ servers:
   - url: http://127.0.0.1:9010
     description: Local daemon (default)
 
-security:
-  - bearerAuth: []
-  - {}
+security: []
 
 paths:
   # ── Messages ──────────────────────────────────────────────
@@ -76,12 +71,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "413":
           description: Message body exceeds maximum size.
           content:
@@ -115,12 +104,6 @@ paths:
             text/event-stream:
               schema:
                 $ref: "#/components/schemas/IncomingMessage"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/messages/{id}/cancel:
     post:
@@ -141,12 +124,6 @@ paths:
       responses:
         "200":
           description: Cancel request sent.
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Message not found.
           content:
@@ -177,12 +154,6 @@ paths:
                 $ref: "#/components/schemas/SendMessageResponse"
         "400":
           description: Invalid request or address.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid bearer token.
           content:
             application/json:
               schema:
@@ -220,12 +191,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Thread not found.
           content:
@@ -246,12 +211,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PeersResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/peers/{public_key}/block:
     post:
@@ -268,8 +227,8 @@ paths:
       responses:
         "200":
           description: Agent blocked.
-        "401":
-          description: Missing or invalid bearer token.
+        "400":
+          description: Invalid public key.
           content:
             application/json:
               schema:
@@ -287,8 +246,8 @@ paths:
       responses:
         "200":
           description: Agent unblocked.
-        "401":
-          description: Missing or invalid bearer token.
+        "400":
+          description: Invalid public key.
           content:
             application/json:
               schema:
@@ -307,12 +266,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApprovalsResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/approvals/{id}:
     post:
@@ -334,12 +287,6 @@ paths:
       responses:
         "200":
           description: Decision applied.
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Approval request not found.
           content:
@@ -367,8 +314,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DiscoverResponse"
-        "401":
-          description: Missing or invalid bearer token.
+        "400":
+          description: Missing or invalid host parameter.
           content:
             application/json:
               schema:
@@ -385,12 +332,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DiscoverResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Connections ───────────────────────────────────────────
 
@@ -405,12 +346,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConnectionsResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Daemon ────────────────────────────────────────────────
 
@@ -419,7 +354,6 @@ paths:
       operationId: healthCheck
       summary: Health check.
       description: Lightweight probe for load balancers. Always unauthenticated.
-      security: []
       responses:
         "200":
           description: Daemon is healthy.
@@ -442,12 +376,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StatusResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/daemon/shutdown:
     post:
@@ -466,12 +394,6 @@ paths:
       responses:
         "200":
           description: Shutdown initiated.
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/logs:
     get:
@@ -494,24 +416,12 @@ paths:
             text/event-stream:
               schema:
                 $ref: "#/components/schemas/LogEntry"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     delete:
       operationId: clearLogs
       summary: Delete all log entries.
       responses:
         "200":
           description: Logs cleared.
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Diagnostics ───────────────────────────────────────────
 
@@ -526,12 +436,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DiagnosticsResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /v1/upgrade/check:
     get:
@@ -544,12 +448,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UpgradeCheckResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Keys ──────────────────────────────────────────────────
 
@@ -567,8 +465,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KeyRotationResponse"
-        "401":
-          description: Missing or invalid bearer token.
+        "500":
+          description: Failed to load or save keys.
           content:
             application/json:
               schema:
@@ -593,8 +491,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BackupExportResponse"
-        "401":
-          description: Missing or invalid bearer token.
+        "400":
+          description: Empty passphrase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Cannot read key/config files.
           content:
             application/json:
               schema:
@@ -619,12 +523,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Config ────────────────────────────────────────────────
 
@@ -639,12 +537,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigResponse"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     patch:
       operationId: updateConfig
       summary: Update configuration fields.
@@ -670,12 +562,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   # ── Agent Card ────────────────────────────────────────────
 
@@ -690,22 +576,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentCard"
-        "401":
-          description: Missing or invalid bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: |
-        Required when the daemon is bound to a non-localhost address.
-        Set via [api] token in ~/.toq/config.toml or TOQ_API_TOKEN env var.
-
   schemas:
     # ── Messages ────────────────────────────────────────────
 
@@ -1226,7 +1098,6 @@ components:
                 - not_reachable
                 - delivery_timeout
                 - message_too_large
-                - unauthorized
                 - invalid_passphrase
                 - invalid_config
               description: Machine-readable error code.

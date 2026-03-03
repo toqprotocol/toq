@@ -1,12 +1,12 @@
 //! Local API server for SDK integration.
 //!
-//! Exposes an HTTP API on localhost (configurable) that SDKs and tooling
-//! use to interact with the daemon. The daemon handles all protocol
-//! complexity; this API is the bridge to application code.
+//! Exposes an HTTP API on localhost that SDKs and tooling use to
+//! interact with the daemon. Internal plumbing between the SDK
+//! and the daemon on the same machine.
 
 mod handlers;
 mod state;
-mod types;
+pub mod types;
 
 pub use state::ApiState;
 

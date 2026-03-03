@@ -9,7 +9,7 @@ pub struct ConnectionInfo {
     pub session_id: String,
     pub peer_address: String,
     pub peer_public_key: String,
-    pub connected_at: Instant,
+    pub connected_at: String,
     pub messages_exchanged: u64,
 }
 
@@ -23,7 +23,8 @@ struct SessionRecord {
     peer_key: [u8; 32],
     peer_address: String,
     peer_public_key: String,
-    created_at: Instant,
+    created_at: String,
+    created_instant: Instant,
     last_sequence: u64,
     messages_exchanged: u64,
 }
@@ -49,7 +50,8 @@ impl SessionStore {
                 peer_key: key_bytes,
                 peer_address: peer_address.to_string(),
                 peer_public_key: peer_key.to_encoded(),
-                created_at: Instant::now(),
+                created_at: crate::now_utc(),
+                created_instant: Instant::now(),
                 last_sequence: 0,
                 messages_exchanged: 0,
             },
@@ -68,7 +70,7 @@ impl SessionStore {
         if record.peer_key != *peer_key.as_bytes() {
             return None;
         }
-        if record.created_at.elapsed() > SESSION_RESUME_TIMEOUT {
+        if record.created_instant.elapsed() > SESSION_RESUME_TIMEOUT {
             return None;
         }
         Some(record.last_sequence)
@@ -101,7 +103,7 @@ impl SessionStore {
         let expired: Vec<String> = self
             .sessions
             .iter()
-            .filter(|(_, r)| r.created_at.elapsed() > SESSION_RESUME_TIMEOUT)
+            .filter(|(_, r)| r.created_instant.elapsed() > SESSION_RESUME_TIMEOUT)
             .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
@@ -124,7 +126,7 @@ impl SessionStore {
                 session_id: id.clone(),
                 peer_address: r.peer_address.clone(),
                 peer_public_key: r.peer_public_key.clone(),
-                connected_at: r.created_at,
+                connected_at: r.created_at.clone(),
                 messages_exchanged: r.messages_exchanged,
             })
             .collect()

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use crate::constants::MAX_PENDING_APPROVALS;
 use crate::crypto::PublicKey;
@@ -29,7 +28,7 @@ pub enum PolicyDecision {
 pub struct PendingApproval {
     pub public_key: Vec<u8>,
     pub address: String,
-    pub requested_at: Instant,
+    pub requested_at: String,
 }
 
 /// Manages connection policy: blocklist, allowlist, approvals.
@@ -43,7 +42,7 @@ pub struct PolicyEngine {
 
 struct PendingInfo {
     address: String,
-    requested_at: Instant,
+    requested_at: String,
 }
 
 impl PolicyEngine {
@@ -126,7 +125,7 @@ impl PolicyEngine {
             key.as_bytes().to_vec(),
             PendingInfo {
                 address: address.to_string(),
-                requested_at: Instant::now(),
+                requested_at: crate::now_utc(),
             },
         );
     }
@@ -137,7 +136,7 @@ impl PolicyEngine {
             .map(|(key, info)| PendingApproval {
                 public_key: key.clone(),
                 address: info.address.clone(),
-                requested_at: info.requested_at,
+                requested_at: info.requested_at.clone(),
             })
             .collect()
     }
