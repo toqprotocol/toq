@@ -1,0 +1,1235 @@
+openapi: 3.1.0
+info:
+  title: toq Local API
+  description: |
+    HTTP API exposed by the toq daemon for SDK and tooling integration.
+    The daemon handles all protocol complexity (crypto, TLS, handshake,
+    connections, retries, key management). This API is the interface
+    between local agent code and the daemon.
+
+    Default bind: 127.0.0.1:9010 (localhost only).
+    Configurable via [api] section in ~/.toq/config.toml.
+    When bound to a non-localhost address, a bearer token is required.
+
+    Connection priority: TOQ_API_URL env var > explicit SDK param > config file.
+  version: 0.1.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://127.0.0.1:9010
+    description: Local daemon (default)
+
+security:
+  - bearerAuth: []
+  - {}
+
+paths:
+  # ── Messages ──────────────────────────────────────────────
+
+  /v1/messages:
+    post:
+      operationId: sendMessage
+      summary: Send a message to a remote agent.
+      description: |
+        By default (wait=false), returns immediately after the daemon
+        accepts the message. With wait=true, blocks until the remote
+        agent acknowledges receipt or the timeout expires.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Block until the remote agent acknowledges receipt.
+        - name: timeout
+          in: query
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 300
+          description: Seconds to wait for acknowledgement. Only used when wait=true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: Message delivered (wait=true).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+        "202":
+          description: Message accepted for delivery (wait=false).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+        "400":
+          description: Invalid request or address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Message body exceeds maximum size.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cannot reach target agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "504":
+          description: Delivery timeout (no ack within timeout).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      operationId: streamMessages
+      summary: Stream incoming messages via SSE.
+      description: |
+        Live feed of incoming messages. Messages received while
+        disconnected are not replayed. Multiple concurrent connections
+        are supported.
+      responses:
+        "200":
+          description: SSE stream of incoming messages.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/IncomingMessage"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/messages/{id}/cancel:
+    post:
+      operationId: cancelMessage
+      summary: Cancel a sent message.
+      description: |
+        Sends a message.cancel to the remote agent. If the message
+        has not been processed, the receiver discards it. If already
+        processed, the cancel is a no-op.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: ID of the message to cancel.
+      responses:
+        "200":
+          description: Cancel request sent.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Message not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/messages/stream:
+    post:
+      operationId: sendStreamingMessage
+      summary: Send a message using streaming delivery.
+      description: |
+        Sends the message using the streaming protocol (chunked delivery).
+        The daemon handles chunking over the wire. The remote agent
+        receives chunks incrementally and reassembles them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "202":
+          description: Streaming message accepted for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+        "400":
+          description: Invalid request or address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Message body exceeds maximum size.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cannot reach target agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Threads ───────────────────────────────────────────────
+
+  /v1/threads/{thread_id}:
+    get:
+      operationId: getThread
+      summary: Get messages in a thread.
+      parameters:
+        - name: thread_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Thread ID.
+      responses:
+        "200":
+          description: Messages in the thread.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Thread not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Peers ─────────────────────────────────────────────────
+
+  /v1/peers:
+    get:
+      operationId: listPeers
+      summary: List known peers.
+      responses:
+        "200":
+          description: List of peers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PeersResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/peers/{public_key}/block:
+    post:
+      operationId: blockPeer
+      summary: Block an agent by public key.
+      description: Silently drops and permanently rejects the agent.
+      parameters:
+        - name: public_key
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Ed25519 public key of the agent to block.
+      responses:
+        "200":
+          description: Agent blocked.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: unblockPeer
+      summary: Unblock an agent.
+      parameters:
+        - name: public_key
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Ed25519 public key of the agent to unblock.
+      responses:
+        "200":
+          description: Agent unblocked.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Approvals ─────────────────────────────────────────────
+
+  /v1/approvals:
+    get:
+      operationId: listApprovals
+      summary: List pending approval requests.
+      responses:
+        "200":
+          description: Pending approval requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalsResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/approvals/{id}:
+    post:
+      operationId: resolveApproval
+      summary: Approve or deny a pending connection request.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Approval request ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecision"
+      responses:
+        "200":
+          description: Decision applied.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Approval request not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Discovery ─────────────────────────────────────────────
+
+  /v1/discover:
+    get:
+      operationId: discoverDns
+      summary: Discover agents at a host via DNS.
+      parameters:
+        - name: host
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Domain to query for toq TXT records.
+      responses:
+        "200":
+          description: Discovered agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoverResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/discover/local:
+    get:
+      operationId: discoverLocal
+      summary: Discover agents on the local network via mDNS.
+      responses:
+        "200":
+          description: Discovered local agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoverResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Connections ───────────────────────────────────────────
+
+  /v1/connections:
+    get:
+      operationId: listConnections
+      summary: List active connections.
+      responses:
+        "200":
+          description: Active connections.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionsResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Daemon ────────────────────────────────────────────────
+
+  /v1/health:
+    get:
+      operationId: healthCheck
+      summary: Health check.
+      description: Lightweight probe for load balancers. Always unauthenticated.
+      security: []
+      responses:
+        "200":
+          description: Daemon is healthy.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok"
+        "405":
+          description: Method not allowed.
+
+  /v1/status:
+    get:
+      operationId: getStatus
+      summary: Get daemon status and identity.
+      responses:
+        "200":
+          description: Daemon status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/daemon/shutdown:
+    post:
+      operationId: shutdownDaemon
+      summary: Gracefully shut down the daemon.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                graceful:
+                  type: boolean
+                  default: true
+                  description: Wait for active threads to finish before stopping.
+      responses:
+        "200":
+          description: Shutdown initiated.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/logs:
+    get:
+      operationId: getLogs
+      summary: Get log entries.
+      parameters:
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Stream log entries in real time via SSE.
+      responses:
+        "200":
+          description: Log entries (JSON array or SSE stream when follow=true).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsResponse"
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/LogEntry"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: clearLogs
+      summary: Delete all log entries.
+      responses:
+        "200":
+          description: Logs cleared.
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Diagnostics ───────────────────────────────────────────
+
+  /v1/diagnostics:
+    get:
+      operationId: runDiagnostics
+      summary: Run diagnostics (port, DNS, keys, disk).
+      responses:
+        "200":
+          description: Diagnostic results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosticsResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/upgrade/check:
+    get:
+      operationId: checkUpgrade
+      summary: Check for a new version.
+      responses:
+        "200":
+          description: Upgrade check result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpgradeCheckResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Keys ──────────────────────────────────────────────────
+
+  /v1/keys/rotate:
+    post:
+      operationId: rotateKeys
+      summary: Rotate identity keys.
+      description: |
+        Generates a new Ed25519 keypair and rotation proof.
+        The daemon must be restarted to use the new keys.
+      responses:
+        "200":
+          description: Keys rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeyRotationResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Backup ────────────────────────────────────────────────
+
+  /v1/backup/export:
+    post:
+      operationId: exportBackup
+      summary: Create an encrypted backup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupExportRequest"
+      responses:
+        "200":
+          description: Encrypted backup data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupExportResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/backup/import:
+    post:
+      operationId: importBackup
+      summary: Restore from an encrypted backup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupImportRequest"
+      responses:
+        "200":
+          description: Backup restored.
+        "400":
+          description: Invalid backup data or wrong passphrase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Config ────────────────────────────────────────────────
+
+  /v1/config:
+    get:
+      operationId: getConfig
+      summary: Read current configuration.
+      responses:
+        "200":
+          description: Current config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateConfig
+      summary: Update configuration fields.
+      description: |
+        Accepts a partial config object. Only provided fields are updated.
+        Some changes take effect immediately, others require a daemon restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigUpdateRequest"
+      responses:
+        "200":
+          description: Config updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+        "400":
+          description: Invalid config values.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Agent Card ────────────────────────────────────────────
+
+  /v1/card:
+    get:
+      operationId: getAgentCard
+      summary: Get this agent's card.
+      responses:
+        "200":
+          description: Agent card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCard"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Required when the daemon is bound to a non-localhost address.
+        Set via [api] token in ~/.toq/config.toml or TOQ_API_TOKEN env var.
+
+  schemas:
+    # ── Messages ────────────────────────────────────────────
+
+    SendMessageRequest:
+      type: object
+      required:
+        - to
+      properties:
+        to:
+          type: string
+          description: Target agent address.
+          example: "toq://peer.example.com/recipe-agent"
+        body:
+          description: Message content. Structure depends on content_type.
+          example: { "text": "What can you make with eggs?" }
+        thread_id:
+          type: string
+          description: Conversation thread ID. Auto-generated if omitted.
+        reply_to:
+          type: string
+          description: ID of the message being replied to.
+        content_type:
+          type: string
+          default: "text/plain"
+          description: MIME type of the body.
+
+    SendMessageResponse:
+      type: object
+      required:
+        - id
+        - status
+        - thread_id
+        - timestamp
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Message ID assigned by the daemon.
+        status:
+          type: string
+          enum:
+            - queued
+            - delivered
+          description: |
+            "queued" when wait=false (delivery in progress).
+            "delivered" when wait=true (remote agent acked).
+        thread_id:
+          type: string
+          description: Thread ID (auto-generated if not provided in request).
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp.
+
+    IncomingMessage:
+      type: object
+      required:
+        - id
+        - type
+        - from
+        - timestamp
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Message ID.
+        type:
+          type: string
+          description: Message type from the toq protocol.
+          example: "message.send"
+        from:
+          type: string
+          description: Sender's toq address.
+          example: "toq://peer.example.com/assistant"
+        body:
+          description: Message content. Structure depends on content_type.
+        thread_id:
+          type: string
+          description: Conversation thread ID.
+        reply_to:
+          type: string
+          description: ID of the message being replied to.
+        content_type:
+          type: string
+          description: MIME type of the body.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp.
+
+    # ── Threads ─────────────────────────────────────────────
+
+    ThreadResponse:
+      type: object
+      required:
+        - thread_id
+        - messages
+      properties:
+        thread_id:
+          type: string
+          description: Thread ID.
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/IncomingMessage"
+          description: Messages in the thread, ordered by timestamp.
+
+    # ── Peers ───────────────────────────────────────────────
+
+    Peer:
+      type: object
+      required:
+        - public_key
+        - address
+        - status
+        - last_seen
+      properties:
+        public_key:
+          type: string
+          description: Peer's Ed25519 public key.
+          example: "ed25519:abc123..."
+        address:
+          type: string
+          description: Peer's toq address.
+          example: "toq://peer.example.com/assistant"
+        status:
+          type: string
+          enum:
+            - approved
+            - pending
+            - blocked
+          description: Peer relationship status.
+        last_seen:
+          type: string
+          format: date-time
+          description: Last time this peer was seen.
+
+    PeersResponse:
+      type: object
+      required:
+        - peers
+      properties:
+        peers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Peer"
+
+    # ── Approvals ───────────────────────────────────────────
+
+    ApprovalRequest:
+      type: object
+      required:
+        - id
+        - public_key
+        - address
+        - requested_at
+      properties:
+        id:
+          type: string
+          description: Approval request ID.
+        public_key:
+          type: string
+          description: Requesting agent's Ed25519 public key.
+        address:
+          type: string
+          description: Requesting agent's toq address.
+        requested_at:
+          type: string
+          format: date-time
+          description: When the request was received.
+
+    ApprovalsResponse:
+      type: object
+      required:
+        - approvals
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApprovalRequest"
+
+    ApprovalDecision:
+      type: object
+      required:
+        - decision
+      properties:
+        decision:
+          type: string
+          enum:
+            - approve
+            - deny
+          description: Whether to approve or deny the connection request.
+
+    # ── Discovery ───────────────────────────────────────────
+
+    DiscoveredAgent:
+      type: object
+      required:
+        - address
+        - public_key
+      properties:
+        address:
+          type: string
+          description: Discovered agent's toq address.
+          example: "toq://example.com/assistant"
+        public_key:
+          type: string
+          description: Agent's Ed25519 public key from DNS/mDNS record.
+
+    DiscoverResponse:
+      type: object
+      required:
+        - agents
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoveredAgent"
+
+    # ── Connections ─────────────────────────────────────────
+
+    Connection:
+      type: object
+      required:
+        - session_id
+        - peer_address
+        - peer_public_key
+        - connected_at
+        - messages_exchanged
+      properties:
+        session_id:
+          type: string
+          description: Session ID for this connection.
+        peer_address:
+          type: string
+          description: Connected peer's toq address.
+        peer_public_key:
+          type: string
+          description: Connected peer's Ed25519 public key.
+        connected_at:
+          type: string
+          format: date-time
+          description: When the connection was established.
+        messages_exchanged:
+          type: integer
+          description: Number of messages sent and received on this connection.
+
+    ConnectionsResponse:
+      type: object
+      required:
+        - connections
+      properties:
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Connection"
+
+    # ── Status ──────────────────────────────────────────────
+
+    StatusResponse:
+      type: object
+      required:
+        - status
+        - address
+        - connection_mode
+        - active_connections
+        - total_messages
+        - version
+        - public_key
+      properties:
+        status:
+          type: string
+          enum:
+            - running
+          description: Daemon status.
+        address:
+          type: string
+          description: This agent's toq address.
+          example: "toq://localhost/agent"
+        connection_mode:
+          type: string
+          enum:
+            - open
+            - approval
+            - allowlist
+            - dns-verified
+          description: Who can connect to this agent.
+        active_connections:
+          type: integer
+          description: Number of active peer connections.
+        total_messages:
+          type: integer
+          description: Total messages sent and received since daemon started.
+        version:
+          type: string
+          description: toq daemon version.
+          example: "0.1.0"
+        public_key:
+          type: string
+          description: This agent's Ed25519 public key.
+          example: "ed25519:abc123..."
+
+    # ── Logs ────────────────────────────────────────────────
+
+    LogEntry:
+      type: object
+      required:
+        - timestamp
+        - level
+        - message
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: When the log entry was recorded.
+        level:
+          type: string
+          enum:
+            - error
+            - warn
+            - info
+            - debug
+          description: Log level.
+        message:
+          type: string
+          description: Log message.
+
+    LogsResponse:
+      type: object
+      required:
+        - entries
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogEntry"
+
+    # ── Diagnostics ─────────────────────────────────────────
+
+    DiagnosticCheck:
+      type: object
+      required:
+        - name
+        - status
+      properties:
+        name:
+          type: string
+          description: Check name (e.g. "config", "identity_key", "tls_cert", "port", "disk").
+        status:
+          type: string
+          enum:
+            - ok
+            - fail
+          description: Check result.
+        detail:
+          type: string
+          description: Additional detail (e.g. error message on failure).
+
+    DiagnosticsResponse:
+      type: object
+      required:
+        - checks
+        - issues
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagnosticCheck"
+        issues:
+          type: integer
+          description: Number of failed checks.
+
+    UpgradeCheckResponse:
+      type: object
+      required:
+        - current_version
+        - up_to_date
+      properties:
+        current_version:
+          type: string
+          description: Currently running version.
+        up_to_date:
+          type: boolean
+          description: Whether the current version is the latest.
+        latest_version:
+          type: string
+          description: Latest available version (only present if not up to date).
+        download_url:
+          type: string
+          description: URL to download the latest version.
+
+    # ── Keys ────────────────────────────────────────────────
+
+    KeyRotationResponse:
+      type: object
+      required:
+        - old_public_key
+        - new_public_key
+        - rotation_proof
+      properties:
+        old_public_key:
+          type: string
+          description: Previous Ed25519 public key.
+        new_public_key:
+          type: string
+          description: New Ed25519 public key.
+        rotation_proof:
+          type: string
+          description: Cryptographic proof linking old key to new key.
+
+    # ── Backup ──────────────────────────────────────────────
+
+    BackupExportRequest:
+      type: object
+      required:
+        - passphrase
+      properties:
+        passphrase:
+          type: string
+          description: Passphrase to encrypt the backup.
+
+    BackupExportResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: string
+          description: Encrypted backup data (base64-encoded).
+
+    BackupImportRequest:
+      type: object
+      required:
+        - passphrase
+        - data
+      properties:
+        passphrase:
+          type: string
+          description: Passphrase to decrypt the backup.
+        data:
+          type: string
+          description: Encrypted backup data (base64-encoded).
+
+    # ── Config ──────────────────────────────────────────────
+
+    ConfigResponse:
+      type: object
+      required:
+        - config
+      properties:
+        config:
+          type: object
+          description: Full daemon configuration. Matches ~/.toq/config.toml structure.
+
+    ConfigUpdateRequest:
+      type: object
+      description: Partial config object. Only provided fields are updated.
+
+    # ── Agent Card ──────────────────────────────────────────
+
+    AgentCard:
+      type: object
+      required:
+        - name
+        - public_key
+        - protocol_version
+      properties:
+        name:
+          type: string
+          description: Agent name.
+        description:
+          type: string
+          description: Agent description.
+        public_key:
+          type: string
+          description: Ed25519 public key.
+        protocol_version:
+          type: string
+          description: toq protocol version.
+          example: "0.1"
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Negotiated capabilities.
+        accept_files:
+          type: boolean
+          description: Whether this agent accepts file transfers.
+        max_file_size:
+          type: integer
+          description: Maximum file size in bytes.
+        max_message_size:
+          type: integer
+          description: Maximum message size in bytes.
+        connection_mode:
+          type: string
+          description: Connection mode.
+
+    # ── Error ───────────────────────────────────────────────
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_address
+                - not_found
+                - not_reachable
+                - delivery_timeout
+                - message_too_large
+                - unauthorized
+                - invalid_passphrase
+                - invalid_config
+              description: Machine-readable error code.
+            message:
+              type: string
+              description: Human-readable error description.
