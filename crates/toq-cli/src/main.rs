@@ -498,6 +498,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     };
     update_state();
 
+    let error_count = std::sync::Arc::new(AtomicUsize::new(0));
+
     // Start local API server
     let api_state = api::ApiState::new(
         config.clone(),
@@ -505,6 +507,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         address.clone(),
         active_connections.clone(),
         total_messages.clone(),
+        error_count.clone(),
         policy.clone(),
         sessions.clone(),
     );

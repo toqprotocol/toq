@@ -23,6 +23,7 @@ pub struct ApiState {
     pub address: Arc<Address>,
     pub active_connections: Arc<AtomicUsize>,
     pub total_messages: Arc<AtomicUsize>,
+    pub error_count: Arc<AtomicUsize>,
     pub shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     pub message_tx: broadcast::Sender<IncomingMessage>,
     pub policy: Arc<Mutex<PolicyEngine>>,
@@ -36,6 +37,7 @@ impl ApiState {
         address: Address,
         active_connections: Arc<AtomicUsize>,
         total_messages: Arc<AtomicUsize>,
+        error_count: Arc<AtomicUsize>,
         policy: Arc<Mutex<PolicyEngine>>,
         sessions: Arc<Mutex<SessionStore>>,
     ) -> Self {
@@ -46,6 +48,7 @@ impl ApiState {
             address: Arc::new(address),
             active_connections,
             total_messages,
+            error_count,
             shutdown_tx: Arc::new(Mutex::new(None)),
             message_tx,
             policy,

@@ -55,6 +55,8 @@ pub struct StatusResponse {
     pub connection_mode: String,
     pub active_connections: usize,
     pub total_messages: usize,
+    pub error_count: usize,
+    pub backpressure_active: bool,
     pub version: &'static str,
     pub public_key: String,
 }

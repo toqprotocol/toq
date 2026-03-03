@@ -404,8 +404,8 @@ paths:
       operationId: getLogs
       summary: Get log entries.
       description: |
-        Returns recent log entries. The follow parameter is reserved
-        for future SSE streaming support.
+        Returns recent log entries. When follow=true, streams new
+        entries in real time via SSE.
       parameters:
         - name: follow
           in: query
@@ -415,11 +415,14 @@ paths:
           description: Stream log entries in real time via SSE.
       responses:
         "200":
-          description: Log entries.
+          description: Log entries (JSON when follow=false, SSE when follow=true).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogsResponse"
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/LogEntry"
     delete:
       operationId: clearLogs
       summary: Delete all log entries.
@@ -710,7 +713,8 @@ components:
         status:
           type: string
           enum:
-            - approved
+            - connected
+            - disconnected
             - pending
             - blocked
           description: Peer relationship status.
@@ -849,6 +853,8 @@ components:
         - connection_mode
         - active_connections
         - total_messages
+        - error_count
+        - backpressure_active
         - version
         - public_key
       properties:
@@ -875,6 +881,12 @@ components:
         total_messages:
           type: integer
           description: Total messages sent and received since daemon started.
+        error_count:
+          type: integer
+          description: Total errors since daemon started.
+        backpressure_active:
+          type: boolean
+          description: Whether backpressure is currently active.
         version:
           type: string
           description: toq daemon version.

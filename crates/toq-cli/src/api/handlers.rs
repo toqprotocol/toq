@@ -278,16 +278,34 @@ pub async fn get_thread(Path(thread_id): Path<String>) -> Response {
 
 // ── Peers ───────────────────────────────────────────────────
 
-pub async fn list_peers() -> Response {
+pub async fn list_peers(State(state): State<ApiState>) -> Response {
     let store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+    let sessions = state.sessions.lock().await;
+    let connected_keys: std::collections::HashSet<String> = sessions
+        .list()
+        .into_iter()
+        .map(|c| c.peer_public_key)
+        .collect();
+    drop(sessions);
+
     let peers = store
         .peers
         .iter()
-        .map(|(key, record)| PeerEntry {
-            public_key: key.clone(),
-            address: record.address.clone(),
-            status: format!("{:?}", record.status).to_lowercase(),
-            last_seen: record.last_seen.clone(),
+        .map(|(key, record)| {
+            let base_status = format!("{:?}", record.status).to_lowercase();
+            let status = if connected_keys.contains(key) {
+                "connected".to_string()
+            } else if base_status == "approved" {
+                "disconnected".to_string()
+            } else {
+                base_status
+            };
+            PeerEntry {
+                public_key: key.clone(),
+                address: record.address.clone(),
+                status,
+                last_seen: record.last_seen.clone(),
+            }
         })
         .collect();
     json_ok(PeersResponse { peers })
@@ -429,6 +447,8 @@ pub async fn get_status(State(state): State<ApiState>) -> Response {
         connection_mode: config.connection_mode.clone(),
         active_connections: state.active_connections.load(Ordering::Relaxed),
         total_messages: state.total_messages.load(Ordering::Relaxed),
+        error_count: state.error_count.load(Ordering::Relaxed),
+        backpressure_active: false,
         version: env!("CARGO_PKG_VERSION"),
         public_key: state.keypair.public_key().to_encoded(),
     })
@@ -446,27 +466,62 @@ pub async fn shutdown_daemon(
     StatusCode::OK.into_response()
 }
 
-pub async fn get_logs() -> Response {
+#[derive(Deserialize)]
+pub struct LogParams {
+    #[serde(default)]
+    pub follow: bool,
+}
+
+pub async fn get_logs(Query(params): Query<LogParams>) -> Response {
     let log_dir = toq_core::config::dirs_path().join(toq_core::constants::LOGS_DIR);
     let log_file = log_dir.join(toq_core::constants::LOG_FILE);
+
+    if params.follow {
+        let stream = async_stream::stream! {
+            let mut pos = std::fs::metadata(&log_file).map(|m| m.len()).unwrap_or(0);
+            loop {
+                let current_len = std::fs::metadata(&log_file).map(|m| m.len()).unwrap_or(0);
+                if current_len > pos {
+                    if let Ok(content) = std::fs::read_to_string(&log_file) {
+                        let bytes = content.as_bytes();
+                        if (pos as usize) < bytes.len() {
+                            let new_content = &content[pos as usize..];
+                            for line in new_content.lines().filter(|l| !l.is_empty()) {
+                                let entry = parse_log_line(line);
+                                let event: Result<Event, Infallible> = Ok(Event::default().json_data(entry).unwrap_or_default());
+                                yield event;
+                            }
+                        }
+                    }
+                    pos = current_len;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        };
+        return Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response();
+    }
+
     let content = std::fs::read_to_string(&log_file).unwrap_or_default();
     let entries = content
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|line| {
-            // tracing-appender format: "YYYY-MM-DDTHH:MM:SS LEVEL message"
-            let mut parts = line.splitn(3, ' ');
-            let timestamp = parts.next().unwrap_or_default().to_string();
-            let level = parts.next().unwrap_or_default().to_lowercase();
-            let message = parts.next().unwrap_or(line).to_string();
-            LogEntry {
-                timestamp,
-                level,
-                message,
-            }
-        })
+        .map(parse_log_line)
         .collect();
     json_ok(LogsResponse { entries })
+}
+
+fn parse_log_line(line: &str) -> LogEntry {
+    let mut parts = line.splitn(3, ' ');
+    let timestamp = parts.next().unwrap_or_default().to_string();
+    let level = parts.next().unwrap_or_default().to_lowercase();
+    let message = parts.next().unwrap_or(line).to_string();
+    LogEntry {
+        timestamp,
+        level,
+        message,
+    }
 }
 
 pub async fn clear_logs() -> Response {
@@ -479,7 +534,7 @@ pub async fn clear_logs() -> Response {
     StatusCode::OK.into_response()
 }
 
-pub async fn run_diagnostics() -> Response {
+pub async fn run_diagnostics(State(state): State<ApiState>) -> Response {
     let mut checks = Vec::new();
 
     match toq_core::config::Config::load(&toq_core::config::Config::default_path()) {
@@ -516,6 +571,46 @@ pub async fn run_diagnostics() -> Response {
         }),
         Err(e) => checks.push(DiagnosticCheck {
             name: "tls_cert".into(),
+            status: "fail",
+            detail: Some(e.to_string()),
+        }),
+    }
+
+    // Port reachability
+    let config = state.config.lock().await;
+    let bind_addr = format!(
+        "{}:{}",
+        toq_core::constants::DEFAULT_BIND_ADDRESS,
+        config.port
+    );
+    drop(config);
+    match tokio::net::TcpListener::bind(&bind_addr).await {
+        Ok(_) => checks.push(DiagnosticCheck {
+            name: "port".into(),
+            status: "ok",
+            detail: Some(bind_addr),
+        }),
+        Err(_) => checks.push(DiagnosticCheck {
+            name: "port".into(),
+            status: "ok",
+            detail: Some(format!("{bind_addr} (in use by daemon)")),
+        }),
+    }
+
+    // Disk writable
+    let toq_dir = toq_core::config::dirs_path();
+    let test_path = toq_dir.join(".disk_check");
+    match std::fs::write(&test_path, "ok") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+            checks.push(DiagnosticCheck {
+                name: "disk".into(),
+                status: "ok",
+                detail: None,
+            });
+        }
+        Err(e) => checks.push(DiagnosticCheck {
+            name: "disk".into(),
             status: "fail",
             detail: Some(e.to_string()),
         }),
@@ -950,6 +1045,7 @@ mod tests {
             Config::default(),
             keypair,
             address,
+            Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicUsize::new(0)),
             policy,
