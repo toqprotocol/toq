@@ -2155,7 +2155,6 @@ fn session_increment_messages_unknown() {
     store.increment_messages("nonexistent"); // should not panic
 }
 
-
 // --- Config save/reload ---
 
 #[test]
