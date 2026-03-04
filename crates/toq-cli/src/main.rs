@@ -304,7 +304,10 @@ fn run_setup(
     }
 
     let agent_name = if non_interactive {
-        cli_agent_name.unwrap_or_else(|| "agent".to_string())
+        let name = cli_agent_name.unwrap_or_else(|| "agent".to_string());
+        Address::new("localhost", &name)
+            .map_err(|e| format!("Invalid agent name '{name}': {e}"))?;
+        name
     } else {
         inquire::Text::new("Agent name")
             .with_default(&cli_agent_name.unwrap_or_else(|| "agent".to_string()))
@@ -318,7 +321,14 @@ fn run_setup(
     };
 
     let connection_mode = if non_interactive {
-        cli_connection_mode.unwrap_or_else(|| "approval".to_string())
+        let mode = cli_connection_mode.unwrap_or_else(|| "approval".to_string());
+        if !["open", "allowlist", "approval"].contains(&mode.as_str()) {
+            return Err(format!(
+                "Invalid connection mode '{mode}': must be open, allowlist, or approval"
+            )
+            .into());
+        }
+        mode
     } else {
         let mode_options = vec![
             "approval  - You approve each new agent (recommended)",
@@ -337,7 +347,11 @@ fn run_setup(
     };
 
     let adapter = if non_interactive {
-        cli_adapter.unwrap_or_else(|| "http".to_string())
+        let a = cli_adapter.unwrap_or_else(|| "http".to_string());
+        if !["http", "stdin", "unix"].contains(&a.as_str()) {
+            return Err(format!("Invalid adapter '{a}': must be http, stdin, or unix").into());
+        }
+        a
     } else {
         let adapter_options = vec![
             "http   - HTTP POST to a localhost URL (recommended)",
