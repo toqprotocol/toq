@@ -1133,7 +1133,11 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
         "dns-verified" => ConnectionMode::DnsVerified,
         _ => ConnectionMode::Approval,
     };
-    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(PolicyEngine::new(policy_mode)));
+    let mut engine = PolicyEngine::new(policy_mode);
+    let peer_store =
+        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+    engine.load_from_peer_store(&peer_store);
+    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(engine));
 
     let bind_addr = format!(
         "{}:{}",
