@@ -1298,7 +1298,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/peers/{encoded}/block"))
+                Request::post(format!("/v1/peers/{encoded}/block"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1322,7 +1322,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::delete(&format!("/v1/peers/{encoded}/block"))
+                Request::delete(format!("/v1/peers/{encoded}/block"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1348,7 +1348,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/approvals/{encoded}"))
+                Request::post(format!("/v1/approvals/{encoded}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"decision":"approve"}"#))
                     .unwrap(),
@@ -1380,7 +1380,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/approvals/{encoded}"))
+                Request::post(format!("/v1/approvals/{encoded}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"decision":"deny"}"#))
                     .unwrap(),
@@ -1405,7 +1405,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/approvals/{encoded}"))
+                Request::post(format!("/v1/approvals/{encoded}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"decision":"approve"}"#))
                     .unwrap(),
@@ -1442,7 +1442,7 @@ mod tests {
         let app = crate::api::router(test_state());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/approvals/{encoded}"))
+                Request::post(format!("/v1/approvals/{encoded}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"decision":"maybe"}"#))
                     .unwrap(),
@@ -1469,7 +1469,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/peers/{encoded}/block"))
+                Request::post(format!("/v1/peers/{encoded}/block"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1521,7 +1521,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::post(&format!("/v1/approvals/{encoded}"))
+                Request::post(format!("/v1/approvals/{encoded}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"decision":"deny"}"#))
                     .unwrap(),
@@ -1545,7 +1545,7 @@ mod tests {
         let app = crate::api::router(state.clone());
         let resp = app
             .oneshot(
-                Request::delete(&format!("/v1/peers/{encoded}/block"))
+                Request::delete(format!("/v1/peers/{encoded}/block"))
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -623,7 +623,9 @@ fn sequence_tracker_reset() {
     assert!(tracker.check(3)); // above reset
 }
 
-// --- Key Rotation ---#[test]
+// --- Key Rotation ---
+
+#[test]
 fn key_rotation_proof() {
     use toq_core::crypto::{generate_rotation_proof, verify_rotation_proof};
 
@@ -670,7 +672,7 @@ async fn send_message_and_ack() {
         &sender_kp,
         SendParams {
             from: &from,
-            to: &[to.clone()],
+            to: std::slice::from_ref(&to),
             sequence: 1,
             body: Some(json!({"task": "hello"})),
             thread_id: Some("t1".into()),
@@ -1095,7 +1097,7 @@ async fn send_message_rejects_self() {
         &kp,
         SendParams {
             from: &addr,
-            to: &[addr.clone()],
+            to: std::slice::from_ref(&addr),
             sequence: 1,
             body: None,
             thread_id: None,
