@@ -1279,4 +1279,263 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 400);
     }
+
+    /// URL-encode a public key for use in API paths.
+    fn url_encode(s: &str) -> String {
+        s.replace('%', "%25")
+            .replace('/', "%2F")
+            .replace(':', "%3A")
+            .replace('+', "%2B")
+            .replace('=', "%3D")
+    }
+
+    #[tokio::test]
+    async fn block_peer_updates_policy() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/peers/{encoded}/block"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let policy = state.policy.lock().await;
+        assert!(policy.is_blocked(&kp.public_key()));
+    }
+
+    #[tokio::test]
+    async fn unblock_peer_updates_policy() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        state.policy.lock().await.block(&kp.public_key());
+        assert!(state.policy.lock().await.is_blocked(&kp.public_key()));
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::delete(&format!("/v1/peers/{encoded}/block"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        assert!(!state.policy.lock().await.is_blocked(&kp.public_key()));
+    }
+
+    #[tokio::test]
+    async fn approve_updates_policy() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        state
+            .policy
+            .lock()
+            .await
+            .add_pending(&kp.public_key(), "toq://test/peer");
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/approvals/{encoded}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"approve"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let policy = state.policy.lock().await;
+        assert_eq!(policy.pending_count(), 0);
+        assert_eq!(
+            policy.check(&kp.public_key()),
+            toq_core::policy::PolicyDecision::Accept
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_updates_policy() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        state
+            .policy
+            .lock()
+            .await
+            .add_pending(&kp.public_key(), "toq://test/peer");
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/approvals/{encoded}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"deny"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        assert_eq!(state.policy.lock().await.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn approve_in_allowlist_mode() {
+        use toq_core::policy::{ConnectionMode, PolicyDecision, PolicyEngine};
+
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        let state = test_state();
+        *state.policy.lock().await = PolicyEngine::new(ConnectionMode::Allowlist);
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/approvals/{encoded}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"approve"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        assert_eq!(
+            state.policy.lock().await.check(&kp.public_key()),
+            PolicyDecision::Accept
+        );
+    }
+
+    #[tokio::test]
+    async fn unblock_invalid_key_returns_400() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::delete("/v1/peers/not-a-valid-key/block")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn deny_invalid_decision() {
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/approvals/{encoded}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"maybe"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn block_then_check_rejects() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        // Approve first
+        state.policy.lock().await.approve(&kp.public_key());
+        assert_eq!(
+            state.policy.lock().await.check(&kp.public_key()),
+            toq_core::policy::PolicyDecision::Accept
+        );
+
+        // Block via API
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/peers/{encoded}/block"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Now rejected
+        assert_eq!(
+            state.policy.lock().await.check(&kp.public_key()),
+            toq_core::policy::PolicyDecision::Reject
+        );
+    }
+
+    #[tokio::test]
+    async fn approvals_lists_pending() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        state
+            .policy
+            .lock()
+            .await
+            .add_pending(&kp.public_key(), "toq://test/peer");
+
+        let (status, body) = {
+            let app = crate::api::router(state.clone());
+            let resp = app
+                .oneshot(Request::get("/v1/approvals").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, body)
+        };
+        assert_eq!(status, 200);
+        let approvals = body["approvals"].as_array().unwrap();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0]["address"], "toq://test/peer");
+    }
+
+    #[tokio::test]
+    async fn unblock_then_check_pending() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        // Approve, then block, then unblock
+        state.policy.lock().await.approve(&kp.public_key());
+        state.policy.lock().await.block(&kp.public_key());
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::delete(&format!("/v1/peers/{encoded}/block"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // After unblock, not approved anymore, goes to PendingApproval
+        assert_eq!(
+            state.policy.lock().await.check(&kp.public_key()),
+            toq_core::policy::PolicyDecision::PendingApproval
+        );
+    }
 }

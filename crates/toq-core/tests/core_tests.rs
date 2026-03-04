@@ -1371,3 +1371,786 @@ fn session_remove() {
     assert!(store.check_duplicate(&kp.public_key()).is_none());
     assert!(store.validate_resume("sess-1", &kp.public_key()).is_none());
 }
+
+// --- PolicyEngine persistence ---
+
+#[test]
+fn policy_load_empty_peer_store() {
+    use toq_core::keystore::PeerStore;
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let store = PeerStore::default();
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.pending_count(), 0);
+}
+
+#[test]
+fn policy_load_blocked_peer() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Blocked);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_load_approved_peer() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_load_approved_into_allowlist() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_load_pending_peer() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Pending);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.pending_count(), 1);
+
+    let pending = engine.list_pending();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].address, "toq://test/peer");
+}
+
+#[test]
+fn policy_load_mixed_statuses() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let blocked = Keypair::generate();
+    let approved = Keypair::generate();
+    let pending = Keypair::generate();
+
+    let mut store = PeerStore::default();
+    store.upsert(
+        &blocked.public_key(),
+        "toq://a/blocked",
+        PeerStatus::Blocked,
+    );
+    store.upsert(
+        &approved.public_key(),
+        "toq://b/approved",
+        PeerStatus::Approved,
+    );
+    store.upsert(
+        &pending.public_key(),
+        "toq://c/pending",
+        PeerStatus::Pending,
+    );
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store);
+
+    assert_eq!(engine.check(&blocked.public_key()), PolicyDecision::Reject);
+    assert_eq!(engine.check(&approved.public_key()), PolicyDecision::Accept);
+    assert_eq!(engine.pending_count(), 1);
+}
+
+#[test]
+fn policy_load_idempotent() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store);
+    engine.load_from_peer_store(&store);
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_sync_empty_engine() {
+    use toq_core::keystore::PeerStore;
+    use toq_core::policy::*;
+
+    let engine = PolicyEngine::new(ConnectionMode::Approval);
+    let mut store = PeerStore::default();
+    engine.sync_to_peer_store(&mut store);
+    assert!(store.peers.is_empty());
+}
+
+#[test]
+fn policy_sync_blocked_preserves_address() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(
+        &kp.public_key(),
+        "toq://original/addr",
+        PeerStatus::Approved,
+    );
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    engine.block(&kp.public_key());
+    engine.sync_to_peer_store(&mut store);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.status, PeerStatus::Blocked);
+    assert_eq!(record.address, "toq://original/addr");
+}
+
+#[test]
+fn policy_sync_approved_preserves_address() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://original/addr", PeerStatus::Pending);
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.approve(&kp.public_key());
+    engine.sync_to_peer_store(&mut store);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.status, PeerStatus::Approved);
+    assert_eq!(record.address, "toq://original/addr");
+}
+
+#[test]
+fn policy_sync_pending_uses_info_address() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.add_pending(&kp.public_key(), "toq://remote/agent");
+
+    let mut store = PeerStore::default();
+    engine.sync_to_peer_store(&mut store);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.status, PeerStatus::Pending);
+    assert_eq!(record.address, "toq://remote/agent");
+}
+
+#[test]
+fn policy_roundtrip_load_sync() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let blocked = Keypair::generate();
+    let approved = Keypair::generate();
+    let pending = Keypair::generate();
+
+    // Build initial store
+    let mut store = PeerStore::default();
+    store.upsert(
+        &blocked.public_key(),
+        "toq://a/blocked",
+        PeerStatus::Blocked,
+    );
+    store.upsert(
+        &approved.public_key(),
+        "toq://b/approved",
+        PeerStatus::Approved,
+    );
+    store.upsert(
+        &pending.public_key(),
+        "toq://c/pending",
+        PeerStatus::Pending,
+    );
+
+    // Load into engine
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store);
+
+    // Sync back to a fresh store
+    let mut store2 = PeerStore::default();
+    engine.sync_to_peer_store(&mut store2);
+
+    // Verify all peers present with correct status
+    assert_eq!(
+        store2.get(&blocked.public_key()).unwrap().status,
+        PeerStatus::Blocked
+    );
+    assert_eq!(
+        store2.get(&approved.public_key()).unwrap().status,
+        PeerStatus::Approved
+    );
+    assert_eq!(
+        store2.get(&pending.public_key()).unwrap().status,
+        PeerStatus::Pending
+    );
+}
+
+#[test]
+fn policy_approve_adds_to_allowlist() {
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_approve_removes_from_pending() {
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.add_pending(&kp.public_key(), "toq://test/peer");
+    assert_eq!(engine.pending_count(), 1);
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.pending_count(), 0);
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_approve_not_pending_still_works() {
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(engine.pending_count(), 0);
+}
+
+#[test]
+fn policy_deny_not_pending_noop() {
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.deny(&kp.public_key());
+    assert_eq!(engine.pending_count(), 0);
+}
+
+// --- PeerStore ---
+
+#[test]
+fn peer_store_default_empty() {
+    use toq_core::keystore::PeerStore;
+    let store = PeerStore::default();
+    assert!(store.peers.is_empty());
+}
+
+#[test]
+fn peer_store_upsert_and_get() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.address, "toq://test/peer");
+    assert_eq!(record.status, PeerStatus::Approved);
+}
+
+#[test]
+fn peer_store_upsert_updates_existing() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://old/addr", PeerStatus::Pending);
+    store.upsert(&kp.public_key(), "toq://new/addr", PeerStatus::Approved);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.address, "toq://new/addr");
+    assert_eq!(record.status, PeerStatus::Approved);
+}
+
+#[test]
+fn peer_store_upsert_pending_does_not_overwrite_status() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Pending);
+
+    let record = store.get(&kp.public_key()).unwrap();
+    assert_eq!(record.status, PeerStatus::Approved);
+}
+
+#[test]
+fn peer_store_get_missing() {
+    use toq_core::keystore::PeerStore;
+
+    let kp = Keypair::generate();
+    let store = PeerStore::default();
+    assert!(store.get(&kp.public_key()).is_none());
+}
+
+#[test]
+fn peer_store_save_load_roundtrip() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+
+    let dir = std::env::temp_dir().join(format!("toq-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("peers.json");
+
+    store.save(&path).unwrap();
+    let loaded = PeerStore::load(&path).unwrap();
+
+    let record = loaded.get(&kp.public_key()).unwrap();
+    assert_eq!(record.address, "toq://test/peer");
+    assert_eq!(record.status, PeerStatus::Approved);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn peer_store_load_nonexistent() {
+    use std::path::Path;
+    use toq_core::keystore::PeerStore;
+
+    let store = PeerStore::load(Path::new("/tmp/toq-nonexistent-file.json")).unwrap();
+    assert!(store.peers.is_empty());
+}
+
+// --- PolicyEngine edge cases ---
+
+#[test]
+fn policy_load_invalid_key_skipped() {
+    use toq_core::keystore::{PeerRecord, PeerStatus, PeerStore};
+    use toq_core::policy::*;
+
+    let mut store = PeerStore::default();
+    store.peers.insert(
+        "not-a-valid-key".to_string(),
+        PeerRecord {
+            address: "toq://test/peer".to_string(),
+            status: PeerStatus::Approved,
+            first_seen: "2026-01-01T00:00:00Z".to_string(),
+            last_seen: "2026-01-01T00:00:00Z".to_string(),
+        },
+    );
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.load_from_peer_store(&store); // should not panic
+    assert_eq!(engine.pending_count(), 0);
+}
+
+#[test]
+fn policy_approval_max_pending() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    for i in 0..toq_core::constants::MAX_PENDING_APPROVALS {
+        let kp = Keypair::generate();
+        engine.add_pending(&kp.public_key(), &format!("toq://test/peer-{i}"));
+    }
+
+    let extra = Keypair::generate();
+    assert_eq!(engine.check(&extra.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_block_removes_from_approved() {
+    use toq_core::policy::*;
+
+    let kp = Keypair::generate();
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+
+    engine.block(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+
+    engine.unblock(&kp.public_key());
+    // After unblock, not in approved anymore, so goes to PendingApproval
+    assert_eq!(
+        engine.check(&kp.public_key()),
+        PolicyDecision::PendingApproval
+    );
+}
+
+#[test]
+fn policy_dns_verified_rejects_all() {
+    use toq_core::policy::*;
+
+    let engine = PolicyEngine::new(ConnectionMode::DnsVerified);
+    let kp = Keypair::generate();
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_mode_returns_correct() {
+    use toq_core::policy::*;
+
+    let engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    assert_eq!(*engine.mode(), ConnectionMode::Allowlist);
+}
+
+// --- StreamBuffer additional ---
+
+#[test]
+fn stream_buffer_out_of_order() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    buf.add_chunk("s1", 3, serde_json::json!({"text": "c"}));
+    buf.add_chunk("s1", 1, serde_json::json!({"text": "a"}));
+    buf.add_chunk("s1", 2, serde_json::json!({"text": "b"}));
+
+    let result = buf.complete("s1", None).unwrap();
+    // Sorted by sequence
+    assert_eq!(result[0]["text"], "a");
+    assert_eq!(result[1]["text"], "b");
+    assert_eq!(result[2]["text"], "c");
+}
+
+#[test]
+fn stream_buffer_complete_with_final_data() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    buf.add_chunk("s1", 1, serde_json::json!({"text": "hello "}));
+
+    let result = buf
+        .complete("s1", Some(serde_json::json!({"text": "world"})))
+        .unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0]["text"], "hello ");
+    assert_eq!(result[1]["text"], "world");
+}
+
+#[test]
+fn stream_buffer_has_stream() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    assert!(!buf.has_stream("s1"));
+    buf.add_chunk("s1", 1, serde_json::json!("data"));
+    assert!(buf.has_stream("s1"));
+    buf.cancel("s1");
+    assert!(!buf.has_stream("s1"));
+}
+
+#[test]
+fn stream_buffer_complete_unknown_stream() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    assert!(buf.complete("nonexistent", None).is_none());
+}
+
+#[test]
+fn stream_buffer_empty_stream_end() {
+    use toq_core::streaming::StreamBuffer;
+
+    let mut buf = StreamBuffer::new();
+    // End without any chunks, but with final data
+    let result = buf.complete("s1", Some(serde_json::json!({"text": "only final"})));
+    assert!(result.is_none()); // no stream was started
+}
+
+// --- RateLimiter additional ---
+
+#[test]
+fn ratelimit_blocks_over_limit() {
+    use std::net::IpAddr;
+    use toq_core::ratelimit::RateLimiter;
+
+    let mut rl = RateLimiter::new(2);
+    let ip: IpAddr = "10.0.0.1".parse().unwrap();
+    assert!(rl.check(ip));
+    assert!(rl.check(ip));
+    assert!(!rl.check(ip)); // third request blocked
+}
+
+// --- Config additional ---
+
+#[test]
+fn config_with_agent() {
+    use toq_core::config::Config;
+
+    let config = Config::default().with_agent("my-bot".into(), "allowlist".into());
+    assert_eq!(config.agent_name, "my-bot");
+    assert_eq!(config.connection_mode, "allowlist");
+}
+
+#[test]
+fn config_with_adapter() {
+    use toq_core::config::Config;
+
+    let config = Config::default().with_adapter("unix".into());
+    assert_eq!(config.adapter, "unix");
+}
+
+#[test]
+fn config_load_nonexistent_returns_default() {
+    use std::path::Path;
+    use toq_core::config::Config;
+
+    let config = Config::load(Path::new("/tmp/toq-nonexistent-config.toml")).unwrap();
+    assert_eq!(config.agent_name, "agent");
+    assert_eq!(config.connection_mode, "approval");
+}
+
+// --- DeliveryTracker additional ---
+
+#[test]
+fn delivery_tracker_ack_unknown() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let unknown = uuid::Uuid::new_v4();
+    assert!(!tracker.ack(&unknown)); // returns false for unknown
+}
+
+#[test]
+fn delivery_tracker_multiple_pending() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    tracker.track(id1);
+    tracker.track(id2);
+
+    assert!(tracker.ack(&id1));
+    assert!(!tracker.ack(&id1)); // already acked
+    assert!(tracker.ack(&id2));
+}
+
+// --- PeerStore additional ---
+
+#[test]
+fn peer_store_save_load_multiple_peers() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp1 = Keypair::generate();
+    let kp2 = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp1.public_key(), "toq://a/one", PeerStatus::Approved);
+    store.upsert(&kp2.public_key(), "toq://b/two", PeerStatus::Blocked);
+
+    let dir = std::env::temp_dir().join(format!("toq-test-multi-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("peers.json");
+
+    store.save(&path).unwrap();
+    let loaded = PeerStore::load(&path).unwrap();
+
+    assert_eq!(loaded.peers.len(), 2);
+    assert_eq!(
+        loaded.get(&kp1.public_key()).unwrap().status,
+        PeerStatus::Approved
+    );
+    assert_eq!(
+        loaded.get(&kp2.public_key()).unwrap().status,
+        PeerStatus::Blocked
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn peer_store_remove_peer() {
+    use toq_core::keystore::{PeerStatus, PeerStore};
+
+    let kp = Keypair::generate();
+    let mut store = PeerStore::default();
+    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    assert!(store.get(&kp.public_key()).is_some());
+
+    let key_str = kp.public_key().to_encoded();
+    store.peers.remove(&key_str);
+    assert!(store.get(&kp.public_key()).is_none());
+}
+
+// --- DeliveryTracker additional ---
+
+#[test]
+fn delivery_tracker_record_retry() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let id = uuid::Uuid::new_v4();
+    tracker.track(id);
+
+    // First few retries should succeed
+    assert!(tracker.record_retry(&id));
+    assert!(tracker.record_retry(&id));
+
+    // Eventually exceeds max
+    for _ in 0..20 {
+        tracker.record_retry(&id);
+    }
+    assert!(!tracker.record_retry(&id));
+}
+
+#[test]
+fn delivery_tracker_record_retry_unknown() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let unknown = uuid::Uuid::new_v4();
+    assert!(!tracker.record_retry(&unknown));
+}
+
+#[test]
+fn delivery_tracker_drain_undeliverable() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let id = uuid::Uuid::new_v4();
+    tracker.track(id);
+
+    // Push past max retries
+    for _ in 0..20 {
+        tracker.record_retry(&id);
+    }
+
+    let failed = tracker.drain_undeliverable();
+    assert!(failed.contains(&id));
+    assert!(!tracker.ack(&id)); // removed
+}
+
+#[test]
+fn delivery_tracker_drain_empty() {
+    use toq_core::delivery::DeliveryTracker;
+
+    let mut tracker = DeliveryTracker::new();
+    let id = uuid::Uuid::new_v4();
+    tracker.track(id);
+    assert!(tracker.drain_undeliverable().is_empty()); // not past max retries
+}
+
+// --- DedupSet additional ---
+
+#[test]
+fn dedup_set_not_duplicate_first_time() {
+    use toq_core::delivery::DedupSet;
+
+    let mut dedup = DedupSet::new();
+    let id = uuid::Uuid::new_v4();
+    assert!(!dedup.is_duplicate(&id));
+}
+
+#[test]
+fn dedup_set_duplicate_second_time() {
+    use toq_core::delivery::DedupSet;
+
+    let mut dedup = DedupSet::new();
+    let id = uuid::Uuid::new_v4();
+    assert!(!dedup.is_duplicate(&id));
+    assert!(dedup.is_duplicate(&id));
+}
+
+#[test]
+fn dedup_set_different_ids_not_duplicate() {
+    use toq_core::delivery::DedupSet;
+
+    let mut dedup = DedupSet::new();
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    assert!(!dedup.is_duplicate(&id1));
+    assert!(!dedup.is_duplicate(&id2));
+}
+
+// --- SessionStore additional ---
+
+#[test]
+fn session_list() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp1 = Keypair::generate();
+    let kp2 = Keypair::generate();
+    store.register("sess-1", &kp1.public_key(), "toq://a/one");
+    store.register("sess-2", &kp2.public_key(), "toq://b/two");
+
+    let list = store.list();
+    assert_eq!(list.len(), 2);
+}
+
+#[test]
+fn session_update_sequence() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp = Keypair::generate();
+    store.register("sess-1", &kp.public_key(), "toq://test/peer");
+
+    store.update_sequence("sess-1", 42);
+    let seq = store.validate_resume("sess-1", &kp.public_key());
+    assert_eq!(seq, Some(42));
+}
+
+#[test]
+fn session_increment_messages() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    let kp = Keypair::generate();
+    store.register("sess-1", &kp.public_key(), "toq://test/peer");
+
+    store.increment_messages("sess-1");
+    store.increment_messages("sess-1");
+
+    let list = store.list();
+    assert_eq!(list[0].messages_exchanged, 2);
+}
+
+#[test]
+fn session_list_empty() {
+    use toq_core::session::SessionStore;
+
+    let store = SessionStore::new();
+    assert!(store.list().is_empty());
+}
+
+#[test]
+fn session_update_sequence_unknown() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    store.update_sequence("nonexistent", 10); // should not panic
+}
+
+#[test]
+fn session_increment_messages_unknown() {
+    use toq_core::session::SessionStore;
+
+    let mut store = SessionStore::new();
+    store.increment_messages("nonexistent"); // should not panic
+}
