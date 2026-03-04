@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::constants::MAX_PENDING_APPROVALS;
 use crate::crypto::PublicKey;
+use crate::keystore::{PeerStatus, PeerStore};
 
 /// Connection mode.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -53,6 +54,37 @@ impl PolicyEngine {
             allowlist: HashSet::new(),
             approved: HashSet::new(),
             pending: HashMap::new(),
+        }
+    }
+
+    /// Populate policy state from the persisted peer store.
+    /// Blocked peers go into the blocklist. Approved peers go into both
+    /// the approved set and the allowlist (so allowlist mode works).
+    /// Pending peers are restored into the pending queue.
+    pub fn load_from_peer_store(&mut self, store: &PeerStore) {
+        for (key_str, record) in &store.peers {
+            let Ok(pk) = PublicKey::from_encoded(key_str) else {
+                continue;
+            };
+            let kb = pk.as_bytes().to_vec();
+            match record.status {
+                PeerStatus::Blocked => {
+                    self.blocklist.insert(kb);
+                }
+                PeerStatus::Approved => {
+                    self.approved.insert(kb.clone());
+                    self.allowlist.insert(kb);
+                }
+                PeerStatus::Pending => {
+                    self.pending.insert(
+                        kb,
+                        PendingInfo {
+                            address: record.address.clone(),
+                            requested_at: record.first_seen.clone(),
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -113,7 +145,8 @@ impl PolicyEngine {
     pub fn approve(&mut self, key: &PublicKey) {
         let kb = key.as_bytes().to_vec();
         self.pending.remove(&kb);
-        self.approved.insert(kb);
+        self.approved.insert(kb.clone());
+        self.allowlist.insert(kb);
     }
 
     pub fn deny(&mut self, key: &PublicKey) {
@@ -143,6 +176,33 @@ impl PolicyEngine {
 
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Write all policy state back to a peer store for persistence.
+    pub fn sync_to_peer_store(&self, store: &mut PeerStore) {
+        for kb in &self.blocklist {
+            if let Some(pk) = PublicKey::from_bytes(kb) {
+                let addr = store
+                    .get(&pk)
+                    .map(|r| r.address.clone())
+                    .unwrap_or_default();
+                store.upsert(&pk, &addr, PeerStatus::Blocked);
+            }
+        }
+        for kb in &self.approved {
+            if let Some(pk) = PublicKey::from_bytes(kb) {
+                let addr = store
+                    .get(&pk)
+                    .map(|r| r.address.clone())
+                    .unwrap_or_default();
+                store.upsert(&pk, &addr, PeerStatus::Approved);
+            }
+        }
+        for (kb, info) in &self.pending {
+            if let Some(pk) = PublicKey::from_bytes(kb) {
+                store.upsert(&pk, &info.address, PeerStatus::Pending);
+            }
+        }
     }
 
     pub fn mode(&self) -> &ConnectionMode {

@@ -118,6 +118,12 @@ enum Commands {
     RotateKeys,
     /// Delete all audit logs.
     ClearLogs,
+    /// List pending approval requests (requires running daemon).
+    Approvals,
+    /// Approve a pending connection request (requires running daemon).
+    Approve { id: String },
+    /// Deny a pending connection request (requires running daemon).
+    Deny { id: String },
     /// Run diagnostics: port, DNS, keys, agent responsiveness.
     Doctor,
     /// Update the toq binary.
@@ -151,8 +157,8 @@ async fn main() {
         Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
         Commands::Peers => run_peers(),
-        Commands::Block { ref agent } => run_block(agent),
-        Commands::Unblock { ref agent } => run_unblock(agent),
+        Commands::Block { ref agent } => run_block(agent).await,
+        Commands::Unblock { ref agent } => run_unblock(agent).await,
         Commands::Send {
             ref address,
             ref message,
@@ -162,6 +168,9 @@ async fn main() {
         Commands::Import { ref path } => run_import(path),
         Commands::RotateKeys => run_rotate_keys(),
         Commands::ClearLogs => run_clear_logs(),
+        Commands::Approvals => run_approvals().await,
+        Commands::Approve { ref id } => run_approve(id).await,
+        Commands::Deny { ref id } => run_deny(id).await,
         Commands::Doctor => run_doctor().await,
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
@@ -191,6 +200,15 @@ fn require_setup() {
     if !keystore::is_setup_complete() {
         eprintln!("Setup not complete");
         eprintln!("  Run `toq setup` to generate keys and create config");
+        std::process::exit(1);
+    }
+}
+
+fn require_running() {
+    require_setup();
+    if read_pid().is_none() {
+        eprintln!("Toq is not running");
+        eprintln!("  Run `toq up` to start the daemon");
         std::process::exit(1);
     }
 }
@@ -484,7 +502,11 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         "dns-verified" => ConnectionMode::DnsVerified,
         _ => ConnectionMode::Approval,
     };
-    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(PolicyEngine::new(policy_mode)));
+    let mut engine = PolicyEngine::new(policy_mode);
+    let peer_store =
+        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+    engine.load_from_peer_store(&peer_store);
+    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(engine));
 
     // Wire RateLimiter
     let rate_limiter = std::sync::Arc::new(tokio::sync::Mutex::new(RateLimiter::new(
@@ -615,10 +637,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 tokio::spawn(async move {
                     // Lock policy only for accept_connection, release after
                     let accept_result = {
-                        let policy_guard = policy_clone.lock().await;
+                        let mut policy_guard = policy_clone.lock().await;
                         server::accept_connection(
                             tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                            &card_clone, &features_clone, Some(&policy_guard),
+                            &card_clone, &features_clone, Some(&mut *policy_guard),
                         ).await
                     };
 
@@ -730,10 +752,14 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     remove_pid();
     let _ = fs::remove_file(state_path());
 
-    // Persist peer store for crash recovery
-    let peer_store =
-        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    let _ = peer_store.save(&keystore::peers_path());
+    // Persist policy engine state to peer store
+    {
+        let policy_guard = policy.lock().await;
+        let mut peer_store =
+            toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+        policy_guard.sync_to_peer_store(&mut peer_store);
+        let _ = peer_store.save(&keystore::peers_path());
+    }
 
     Ok(())
 }
@@ -834,13 +860,12 @@ fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-    // Try parsing as encoded public key first, then as address
+async fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+    // Resolve to public key
     let public_key = match toq_core::crypto::PublicKey::from_encoded(agent) {
         Ok(key) => key,
         Err(_) => {
-            // Try looking up by address in peer store
             let found = store.peers.iter().find(|(_, r)| r.address == agent);
             match found {
                 Some((key_str, _)) => toq_core::crypto::PublicKey::from_encoded(key_str)?,
@@ -848,14 +873,31 @@ fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
+    let encoded = public_key.to_encoded();
+
+    // If daemon is running, use API (updates both PolicyEngine and PeerStore)
+    if read_pid().is_some()
+        && let Ok(base) = api_base()
+    {
+        let url = format!("{}/v1/peers/{}/block", base, encoded);
+        if let Ok(resp) = reqwest::Client::new().post(&url).send().await
+            && resp.status().is_success()
+        {
+            println!("Blocked {agent}");
+            return Ok(());
+        }
+    }
+
+    // Fallback: modify PeerStore directly (daemon not running)
+    let mut store = store;
     store.upsert(&public_key, "", toq_core::keystore::PeerStatus::Blocked);
     store.save(&keystore::peers_path())?;
     println!("Blocked {agent}");
     Ok(())
 }
 
-fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+async fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
     let key = match toq_core::crypto::PublicKey::from_encoded(agent) {
         Ok(k) => k,
         Err(_) => {
@@ -866,8 +908,24 @@ fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    let key_str = key.to_encoded();
-    store.peers.remove(&key_str);
+    let encoded = key.to_encoded();
+
+    // If daemon is running, use API (updates both PolicyEngine and PeerStore)
+    if read_pid().is_some()
+        && let Ok(base) = api_base()
+    {
+        let url = format!("{}/v1/peers/{}/block", base, encoded);
+        if let Ok(resp) = reqwest::Client::new().delete(&url).send().await
+            && resp.status().is_success()
+        {
+            println!("Unblocked {agent}");
+            return Ok(());
+        }
+    }
+
+    // Fallback: modify PeerStore directly (daemon not running)
+    let mut store = store;
+    store.peers.remove(&encoded);
     store.save(&keystore::peers_path())?;
     println!("Unblocked {agent}");
     Ok(())
@@ -882,6 +940,72 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("Logs cleared");
+    Ok(())
+}
+
+/// Base URL for the local daemon API.
+fn api_base() -> Result<String, Box<dyn std::error::Error>> {
+    let config = Config::load(&Config::default_path())?;
+    Ok(format!("http://127.0.0.1:{}", config.api_port))
+}
+
+async fn run_approvals() -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let url = format!("{}/v1/approvals", api_base()?);
+    let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
+    let approvals = resp["approvals"].as_array();
+    match approvals {
+        Some(list) if !list.is_empty() => {
+            for a in list {
+                let key = a["public_key"].as_str().unwrap_or("");
+                let addr = a["address"].as_str().unwrap_or("");
+                let time = a["requested_at"].as_str().unwrap_or("");
+                println!("{key}");
+                println!("  address:   {addr}");
+                println!("  requested: {time}");
+                println!();
+            }
+        }
+        _ => println!("No pending approvals"),
+    }
+    Ok(())
+}
+
+async fn run_approve(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let url = format!("{}/v1/approvals/{}", api_base()?, id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"decision": "approve"}))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        println!("Approved {id}");
+    } else {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+        eprintln!("Failed to approve: {msg}");
+    }
+    Ok(())
+}
+
+async fn run_deny(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let url = format!("{}/v1/approvals/{}", api_base()?, id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"decision": "deny"}))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        println!("Denied {id}");
+    } else {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+        eprintln!("Failed to deny: {msg}");
+    }
     Ok(())
 }
 
@@ -1013,10 +1137,10 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
 
                 tokio::spawn(async move {
                     let accept_result = {
-                        let policy_guard = policy_clone.lock().await;
+                        let mut policy_guard = policy_clone.lock().await;
                         server::accept_connection(
                             tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                            &card_clone, &features_clone, Some(&policy_guard),
+                            &card_clone, &features_clone, Some(&mut *policy_guard),
                         ).await
                     };
 

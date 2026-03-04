@@ -311,7 +311,7 @@ pub async fn list_peers(State(state): State<ApiState>) -> Response {
     json_ok(PeersResponse { peers })
 }
 
-pub async fn block_peer(Path(public_key): Path<String>) -> Response {
+pub async fn block_peer(State(state): State<ApiState>, Path(public_key): Path<String>) -> Response {
     let pk = match toq_core::crypto::PublicKey::from_encoded(&public_key) {
         Ok(pk) => pk,
         Err(_) => {
@@ -325,13 +325,28 @@ pub async fn block_peer(Path(public_key): Path<String>) -> Response {
     let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     store.upsert(&pk, "", keystore::PeerStatus::Blocked);
     let _ = store.save(&keystore::peers_path());
+    state.policy.lock().await.block(&pk);
     StatusCode::OK.into_response()
 }
 
-pub async fn unblock_peer(Path(public_key): Path<String>) -> Response {
+pub async fn unblock_peer(
+    State(state): State<ApiState>,
+    Path(public_key): Path<String>,
+) -> Response {
+    let pk = match toq_core::crypto::PublicKey::from_encoded(&public_key) {
+        Ok(pk) => pk,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_REQUEST,
+                "Invalid public key",
+            );
+        }
+    };
     let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     store.peers.remove(&public_key);
     let _ = store.save(&keystore::peers_path());
+    state.policy.lock().await.unblock(&pk);
     StatusCode::OK.into_response()
 }
 
@@ -402,8 +417,34 @@ pub async fn resolve_approval(
 
     let mut policy = state.policy.lock().await;
     match decision.decision.as_str() {
-        "approve" => policy.approve(&pk),
-        "deny" => policy.deny(&pk),
+        "approve" => {
+            let address = policy
+                .list_pending()
+                .iter()
+                .find(|p| {
+                    PublicKey::from_bytes(&p.public_key)
+                        .map(|k| k.to_encoded() == id)
+                        .unwrap_or(false)
+                })
+                .map(|p| p.address.clone())
+                .unwrap_or_default();
+            policy.approve(&pk);
+            let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+            store.upsert(&pk, &address, keystore::PeerStatus::Approved);
+            let _ = store.save(&keystore::peers_path());
+        }
+        "deny" => {
+            policy.deny(&pk);
+            let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+            let is_pending = store
+                .get(&pk)
+                .map(|r| r.status == keystore::PeerStatus::Pending)
+                .unwrap_or(false);
+            if is_pending {
+                store.peers.remove(&id);
+                let _ = store.save(&keystore::peers_path());
+            }
+        }
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,

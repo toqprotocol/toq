@@ -40,7 +40,7 @@ pub async fn accept_connection(
     address: &Address,
     local_card: &AgentCard,
     local_features: &Features,
-    policy: Option<&PolicyEngine>,
+    policy: Option<&mut PolicyEngine>,
 ) -> Result<(ConnectionInfo, tokio_rustls::server::TlsStream<TcpStream>), Error> {
     // TLS
     let mut tls_stream = transport::tls_accept(tls_acceptor, tcp).await?;
@@ -63,6 +63,7 @@ pub async fn accept_connection(
                 ));
             }
             PolicyDecision::PendingApproval => {
+                engine.add_pending(&hs.peer_public_key, &hs.peer_address.to_string());
                 // Send approval.request to the initiator before returning.
                 crate::connection::send_approval_request(
                     &mut tls_stream,
