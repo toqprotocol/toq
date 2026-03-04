@@ -705,6 +705,27 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         ).await;
                                         seq += 1;
                                     }
+                                    MessageType::StreamChunk | MessageType::StreamEnd => {
+                                        let agent_msg = AgentMessage::from_envelope(&envelope);
+                                        tracing::info!("stream from {}: {}", agent_msg.from, agent_msg.id);
+
+                                        let _ = msg_tx.send(api::types::IncomingMessage {
+                                            id: agent_msg.id.clone(),
+                                            msg_type: agent_msg.msg_type.clone(),
+                                            from: agent_msg.from.clone(),
+                                            body: agent_msg.body.clone(),
+                                            thread_id: agent_msg.thread_id.clone(),
+                                            reply_to: agent_msg.reply_to.clone(),
+                                            content_type: agent_msg.content_type.clone(),
+                                            timestamp: toq_core::now_utc(),
+                                        });
+
+                                        let _ = messaging::send_ack(
+                                            &mut stream, &keypair_clone, &address_clone,
+                                            &info.peer_address, &envelope.id, seq,
+                                        ).await;
+                                        seq += 1;
+                                    }
                                     MessageType::SessionDisconnect => {
                                         tracing::info!("peer disconnected: {}", info.peer_address);
                                         break;
