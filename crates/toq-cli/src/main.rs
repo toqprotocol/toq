@@ -85,6 +85,9 @@ enum Commands {
         /// Message adapter: http, stdin, unix (default: http).
         #[arg(long)]
         adapter: Option<String>,
+        /// Agent framework: langchain, crewai, openclaw.
+        #[arg(long)]
+        framework: Option<String>,
     },
     /// Start the toq endpoint.
     Up {
@@ -152,7 +155,14 @@ async fn main() {
             agent_name,
             connection_mode,
             adapter,
-        } => run_setup(non_interactive, agent_name, connection_mode, adapter),
+            framework,
+        } => run_setup(
+            non_interactive,
+            agent_name,
+            connection_mode,
+            adapter,
+            framework,
+        ),
         Commands::Up { foreground } => run_up(foreground).await,
         Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
@@ -300,6 +310,7 @@ fn run_setup(
     cli_agent_name: Option<String>,
     cli_connection_mode: Option<String>,
     cli_adapter: Option<String>,
+    cli_framework: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if keystore::is_setup_complete() {
         if non_interactive {
@@ -364,7 +375,23 @@ fn run_setup(
         }
     };
 
-    let adapter = if non_interactive {
+    let framework = if non_interactive {
+        cli_framework.unwrap_or_default()
+    } else {
+        let framework_options = vec!["none / custom", "LangChain", "CrewAI", "OpenClaw"];
+        let choice = inquire::Select::new("Which agent framework? (optional)", framework_options)
+            .prompt()?;
+        match choice {
+            c if c.starts_with("LangChain") => "langchain".to_string(),
+            c if c.starts_with("CrewAI") => "crewai".to_string(),
+            c if c.starts_with("OpenClaw") => "openclaw".to_string(),
+            _ => String::new(),
+        }
+    };
+
+    let adapter = if !framework.is_empty() {
+        "http".to_string()
+    } else if non_interactive {
         let a = cli_adapter.unwrap_or_else(|| "http".to_string());
         if !["http", "stdin", "unix"].contains(&a.as_str()) {
             return Err(format!("Invalid adapter '{a}': must be http, stdin, or unix").into());
@@ -387,12 +414,6 @@ fn run_setup(
             "http".to_string()
         }
     };
-
-    if !non_interactive {
-        let framework_options = vec!["none / custom", "LangChain", "CrewAI", "OpenClaw"];
-        let _ = inquire::Select::new("Which agent framework? (optional)", framework_options)
-            .prompt()?;
-    }
 
     if non_interactive {
         println!("Generating identity keypair and TLS certificate...");
@@ -440,9 +461,31 @@ fn run_setup(
 
     println!("\n  Quick start:");
     println!("    toq up                    Start your endpoint");
-    println!("    toq send <addr> <msg>     Send a test message");
-    println!("    toq listen                Print incoming messages");
-    println!("    toq down                  Stop the endpoint");
+    match framework.as_str() {
+        "langchain" => {
+            println!("\n  LangChain integration:");
+            println!("    from toq_langchain import ToqToolkit, ToqListener");
+            println!("    toolkit = ToqToolkit()");
+            println!("    toolkit.connect()");
+            println!("    tools = toolkit.get_tools()");
+        }
+        "crewai" => {
+            println!("\n  CrewAI integration:");
+            println!("    from toq_crewai import toq_tools, ToqListener");
+            println!("    tools = toq_tools()");
+        }
+        "openclaw" => {
+            println!("\n  OpenClaw integration:");
+            println!("    clawhub install toq           Install the toq skill");
+            println!("    openclaw plugins install \\");
+            println!("      toq-openclaw-channel        Install the channel plugin");
+        }
+        _ => {
+            println!("    toq send <addr> <msg>     Send a test message");
+            println!("    toq listen                Print incoming messages");
+            println!("    toq down                  Stop the endpoint");
+        }
+    }
 
     println!("\n  Network security:");
     println!("    Your endpoint listens on port 9009");
