@@ -2154,3 +2154,27 @@ fn session_increment_messages_unknown() {
     let mut store = SessionStore::new();
     store.increment_messages("nonexistent"); // should not panic
 }
+
+
+// --- Config save/reload ---
+
+#[test]
+fn config_save_and_reload() {
+    use toq_core::config::Config;
+
+    let dir = std::env::temp_dir().join(format!("toq-test-cfg-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("config.toml");
+
+    let config = Config::default()
+        .with_agent("test-bot".into(), "allowlist".into())
+        .with_adapter("unix".into());
+    config.save(&path).unwrap();
+
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded.agent_name, "test-bot");
+    assert_eq!(loaded.connection_mode, "allowlist");
+    assert_eq!(loaded.adapter, "unix");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
