@@ -2177,3 +2177,11 @@ fn config_save_and_reload() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn config_default_path() {
+    use toq_core::config::Config;
+
+    let path = Config::default_path();
+    assert!(path.ends_with(".toq/config.toml"));
+}

@@ -1512,6 +1512,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deny_nonexistent_key_noop() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = url_encode(&kp.public_key().to_encoded());
+
+        // No pending, no approved, no blocked - just a random key
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post(&format!("/v1/approvals/{encoded}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"deny"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(state.policy.lock().await.pending_count(), 0);
+    }
+
+    #[tokio::test]
     async fn unblock_then_check_pending() {
         let state = test_state();
         let kp = toq_core::crypto::Keypair::generate();
