@@ -1,10 +1,12 @@
 [package]
 name = "toq-core"
-description = "Core protocol library for toq protocol"
+description = "Encrypted agent-to-agent communication protocol library"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["agent", "a2a", "protocol", "encryption", "communication"]
+categories = ["cryptography", "network-programming", "authentication", "artificial-intelligence", "security"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }

@@ -1,10 +1,12 @@
 [package]
 name = "toq"
-description = "CLI for toq protocol"
+description = "Encrypted agent-to-agent communication daemon and CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["agent", "a2a", "protocol", "daemon", "cli"]
+categories = ["command-line-utilities", "network-programming", "artificial-intelligence", "cryptography", "security"]
 
 [[bin]]
 name = "toq"
