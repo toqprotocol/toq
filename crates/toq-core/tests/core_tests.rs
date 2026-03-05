@@ -680,6 +680,7 @@ async fn send_message_and_ack() {
             priority: None,
             content_type: None,
             ttl: None,
+            msg_type: None,
         },
     )
     .await
@@ -1105,6 +1106,7 @@ async fn send_message_rejects_self() {
             priority: None,
             content_type: None,
             ttl: None,
+            msg_type: None,
         },
     )
     .await;

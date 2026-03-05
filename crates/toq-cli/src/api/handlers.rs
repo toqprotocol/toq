@@ -152,6 +152,11 @@ pub async fn send_message(
             priority: None,
             content_type: Some(content_type),
             ttl: None,
+            msg_type: if req.close_thread {
+                Some(toq_core::types::MessageType::ThreadClose)
+            } else {
+                None
+            },
         },
     )
     .await;

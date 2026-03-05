@@ -736,7 +736,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                 &mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE
                             ).await {
                                 match envelope.msg_type {
-                                    MessageType::MessageSend => {
+                                    MessageType::MessageSend | MessageType::ThreadClose => {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         tracing::info!("message from {}: {}", agent_msg.from, agent_msg.id);
                                         msg_count.fetch_add(1, Ordering::Relaxed);
@@ -1166,6 +1166,7 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
             priority: None,
             content_type: Some(toq_core::constants::DEFAULT_CONTENT_TYPE.into()),
             ttl: None,
+            msg_type: None,
         },
     )
     .await?;
@@ -1245,7 +1246,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
                             let mut seq = 2u64;
                             while let Ok(envelope) = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE).await {
                                 match envelope.msg_type {
-                                    MessageType::MessageSend => {
+                                    MessageType::MessageSend | MessageType::ThreadClose => {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         println!("--- message from {} ---", agent_msg.from);
                                         if let Some(body) = &agent_msg.body {

@@ -11,6 +11,8 @@ pub struct SendMessageRequest {
     pub thread_id: Option<String>,
     pub reply_to: Option<String>,
     pub content_type: Option<String>,
+    #[serde(default)]
+    pub close_thread: bool,
 }
 
 #[derive(Debug, Serialize)]

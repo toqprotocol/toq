@@ -168,6 +168,10 @@ pub enum MessageType {
     #[serde(rename = "message.stream.end")]
     StreamEnd,
 
+    // Thread lifecycle
+    #[serde(rename = "thread.close")]
+    ThreadClose,
+
     // System
     #[serde(rename = "system.heartbeat")]
     Heartbeat,

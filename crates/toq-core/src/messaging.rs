@@ -20,6 +20,7 @@ pub struct SendParams<'a> {
     pub priority: Option<Priority>,
     pub content_type: Option<String>,
     pub ttl: Option<u64>,
+    pub msg_type: Option<MessageType>,
 }
 
 /// Build and send a message.send envelope. Returns the message ID.
@@ -35,7 +36,7 @@ where
     let mut envelope = Envelope {
         version: PROTOCOL_VERSION.into(),
         id,
-        msg_type: MessageType::MessageSend,
+        msg_type: params.msg_type.unwrap_or(MessageType::MessageSend),
         from: params.from.clone(),
         to: params.to.to_vec(),
         thread_id: params.thread_id,
