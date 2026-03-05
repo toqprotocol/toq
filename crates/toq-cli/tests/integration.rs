@@ -45,6 +45,7 @@ impl Drop for Instance {
 }
 
 fn kill_port(port: u16) {
+    let own_pid = std::process::id().to_string();
     // Try lsof (macOS/Linux with lsof installed)
     let lsof = StdCommand::new("lsof")
         .args(["-ti", &format!(":{port}")])
@@ -52,7 +53,9 @@ fn kill_port(port: u16) {
     if let Ok(o) = lsof {
         let pids = String::from_utf8_lossy(&o.stdout);
         for pid in pids.split_whitespace() {
-            let _ = StdCommand::new("kill").args(["-9", pid]).output();
+            if pid != own_pid {
+                let _ = StdCommand::new("kill").args(["-9", pid]).output();
+            }
         }
         return;
     }
