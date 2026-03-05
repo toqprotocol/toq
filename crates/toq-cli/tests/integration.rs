@@ -115,6 +115,26 @@ impl Instance {
         format!("http://127.0.0.1:{}{path}", self.api_port)
     }
 
+    /// Spawn an SSE listener that collects chunks for up to `secs` seconds.
+    fn spawn_sse_listener(&self, secs: u64) -> tokio::task::JoinHandle<String> {
+        let url = self.api_url("/v1/messages");
+        tokio::spawn(async move {
+            let mut collected = String::new();
+            if let Ok(mut resp) = Client::new().get(&url).send().await {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+                while tokio::time::Instant::now() < deadline {
+                    match tokio::time::timeout(Duration::from_secs(1), resp.chunk()).await {
+                        Ok(Ok(Some(chunk))) => {
+                            collected.push_str(&String::from_utf8_lossy(&chunk));
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            collected
+        })
+    }
+
     fn start(&mut self) {
         self.cmd().arg("up").assert().success();
         self.started = true;
@@ -181,7 +201,12 @@ fn setup_with_framework_flag() {
             "langchain",
         ])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("Setup complete"));
+
+    // Verify config was created with correct agent name
+    let config = std::fs::read_to_string(dir.path().join(".toq/config.toml")).unwrap();
+    assert!(config.contains("fw-agent"), "config should have agent name");
 }
 
 // ── Daemon start/stop ────────────────────────────────────────
@@ -264,7 +289,8 @@ async fn api_peers_empty() {
         .json()
         .await
         .unwrap();
-    assert!(resp["peers"].is_array());
+    let peers = resp["peers"].as_array().expect("peers should be array");
+    assert!(peers.is_empty(), "fresh daemon should have no peers");
 
     inst.stop();
 }
@@ -283,7 +309,13 @@ async fn api_approvals_empty() {
         .json()
         .await
         .unwrap();
-    assert!(resp["approvals"].is_array());
+    let approvals = resp["approvals"]
+        .as_array()
+        .expect("approvals should be array");
+    assert!(
+        approvals.is_empty(),
+        "fresh daemon should have no approvals"
+    );
 
     inst.stop();
 }
@@ -294,12 +326,19 @@ async fn api_diagnostics() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    let resp = Client::new()
+    let resp: serde_json::Value = Client::new()
         .get(inst.api_url("/v1/diagnostics"))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert!(resp.status().is_success());
+    let resp_str = serde_json::to_string(&resp).unwrap();
+    assert!(
+        resp_str.contains("port") || resp_str.contains("keys") || resp_str.contains("checks"),
+        "diagnostics should contain check results: {resp_str}"
+    );
 
     inst.stop();
 }
@@ -405,7 +444,9 @@ async fn cli_peers_against_daemon() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    inst.cmd().arg("peers").assert().success();
+    inst.cmd().arg("peers").assert().success().stdout(
+        predicate::str::contains("No known peers").or(predicate::str::contains("PUBLIC KEY")),
+    );
 
     inst.stop();
 }
@@ -416,7 +457,10 @@ async fn cli_approvals_against_daemon() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    inst.cmd().arg("approvals").assert().success();
+    inst.cmd().arg("approvals").assert().success().stdout(
+        predicate::str::contains("No pending")
+            .or(predicate::str::contains("no pending").or(predicate::str::contains("APPROVAL"))),
+    );
 
     inst.stop();
 }
@@ -427,7 +471,10 @@ async fn cli_doctor_against_daemon() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    inst.cmd().arg("doctor").assert().success();
+    inst.cmd().arg("doctor").assert().success().stdout(
+        predicate::str::contains("✓")
+            .or(predicate::str::contains("pass").or(predicate::str::contains("ok"))),
+    );
 
     inst.stop();
 }
@@ -438,6 +485,7 @@ async fn cli_logs_against_daemon() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
+    // Logs should return without error (may be empty or have startup entries)
     inst.cmd().arg("logs").assert().success();
 
     inst.stop();
@@ -471,30 +519,16 @@ async fn two_daemons_send_message() {
 
     let client = Client::new();
 
-    // Start SSE listener on bob in background
-    let bob_url = bob.api_url("/v1/messages");
-    let sse_handle = tokio::spawn(async move {
-        let resp = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap()
-            .get(&bob_url)
-            .send()
-            .await;
-        match resp {
-            Ok(r) => r.text().await.unwrap_or_default(),
-            Err(_) => String::new(),
-        }
-    });
+    // Start SSE listener on bob in background to capture incoming messages
+    let sse_handle = bob.spawn_sse_listener(10);
 
-    // Give SSE time to connect
     sleep(Duration::from_millis(500)).await;
 
-    // Send from alice to bob
+    // Send from alice to bob with wait=true to confirm delivery
     let send_resp: serde_json::Value = client
-        .post(alice.api_url("/v1/messages"))
+        .post(format!("{}?wait=true", alice.api_url("/v1/messages")))
         .json(&serde_json::json!({
-            "to": format!("toq://127.0.0.1:29619/bob"),
+            "to": "toq://127.0.0.1:29619/bob",
             "body": {"text": "hello from alice"}
         }))
         .send()
@@ -504,18 +538,22 @@ async fn two_daemons_send_message() {
         .await
         .unwrap();
 
-    let send_str = serde_json::to_string(&send_resp).unwrap().to_lowercase();
+    // Verify sender got "delivered" (ack received from bob)
+    assert_eq!(
+        send_resp["status"].as_str().unwrap_or(""),
+        "delivered",
+        "expected delivered, got: {send_resp}"
+    );
 
-    // Wait for SSE to collect
-    sleep(Duration::from_secs(2)).await;
-    drop(sse_handle);
+    // Wait for SSE to collect, then abort
+    sleep(Duration::from_secs(3)).await;
+    sse_handle.abort();
+    let sse_output = sse_handle.await.unwrap_or_default();
 
-    // The send either succeeded (delivered/queued) or failed with a connection error.
-    // Both are valid integration test outcomes depending on TLS setup.
-    // What matters is we get a structured response, not a crash.
+    // Verify bob received the message content
     assert!(
-        send_str.contains("delivered") || send_str.contains("queued") || send_str.contains("error"),
-        "expected delivered/queued/error, got: {send_str}"
+        sse_output.contains("hello from alice"),
+        "bob should have received the message via SSE, got: {sse_output}"
     );
 
     alice.stop();
@@ -736,7 +774,8 @@ fn setup_twice_preserves_keys() {
 
     // Read original key
     let keys_dir = dir.path().join(".toq/keys");
-    let original_key = std::fs::read_to_string(keys_dir.join("identity.key")).unwrap_or_default();
+    let original_key = std::fs::read_to_string(keys_dir.join("identity.key")).unwrap();
+    assert!(!original_key.is_empty(), "first setup should create key");
 
     // Second setup
     let status = toq_cmd()
@@ -753,18 +792,12 @@ fn setup_twice_preserves_keys() {
         .unwrap();
     assert!(status.success());
 
-    // Key should be preserved or regenerated (both are valid, but shouldn't crash)
-    let new_key = std::fs::read_to_string(keys_dir.join("identity.key")).unwrap_or_default();
-    // At minimum, a key file should exist
-    assert!(
-        !new_key.is_empty(),
-        "key file should exist after second setup"
+    // Key should be preserved (not regenerated)
+    let new_key = std::fs::read_to_string(keys_dir.join("identity.key")).unwrap();
+    assert_eq!(
+        original_key, new_key,
+        "second setup should preserve existing keys"
     );
-    // If keys are preserved, they should match
-    if !original_key.is_empty() {
-        // Log whether keys were preserved (informational)
-        let _preserved = original_key == new_key;
-    }
 }
 
 // ── Clear logs ───────────────────────────────────────────────
@@ -785,7 +818,7 @@ async fn clear_logs_empties_log_list() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // Get logs, should be empty or minimal
+    // Get logs, should be empty
     let logs: serde_json::Value = client
         .get(inst.api_url("/v1/logs"))
         .send()
@@ -794,11 +827,13 @@ async fn clear_logs_empties_log_list() {
         .json()
         .await
         .unwrap();
-    let logs_str = serde_json::to_string(&logs).unwrap();
-    // After clearing, log list should be empty or very small
+    let entries = logs["entries"]
+        .as_array()
+        .or_else(|| logs["logs"].as_array())
+        .or_else(|| logs.as_array());
     assert!(
-        logs_str.contains("[]") || logs_str.contains("logs") || logs.is_object(),
-        "logs response should be valid: {logs_str}"
+        entries.map(|a| a.is_empty()).unwrap_or(true),
+        "logs should be empty after clear: {logs}"
     );
 
     inst.stop();
@@ -1027,10 +1062,18 @@ async fn api_agent_card() {
         .json()
         .await
         .unwrap();
-    let card_str = serde_json::to_string(&resp).unwrap();
+    assert_eq!(
+        resp["name"].as_str().unwrap_or(""),
+        "card",
+        "card should have agent name"
+    );
     assert!(
-        card_str.contains("card"),
-        "should return agent card: {card_str}"
+        resp["public_key"].as_str().is_some(),
+        "card should have public key"
+    );
+    assert!(
+        resp["protocol_version"].as_str().is_some(),
+        "card should have protocol version"
     );
 
     inst.stop();
@@ -1052,11 +1095,10 @@ async fn api_connections_empty() {
         .json()
         .await
         .unwrap();
-    let resp_str = serde_json::to_string(&resp).unwrap();
-    assert!(
-        resp_str.contains("connections") || resp_str.contains("[]"),
-        "should return connections: {resp_str}"
-    );
+    let conns = resp["connections"]
+        .as_array()
+        .expect("connections should be array");
+    assert!(conns.is_empty(), "fresh daemon should have no connections");
 
     inst.stop();
 }
@@ -1069,12 +1111,18 @@ async fn api_discover_dns() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    let resp = Client::new()
+    let resp: serde_json::Value = Client::new()
         .get(inst.api_url("/v1/discover?host=example.com"))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert!(resp.status().is_success());
+    assert!(
+        resp["agents"].is_array(),
+        "discover should return agents array"
+    );
 
     inst.stop();
 }
@@ -1085,12 +1133,18 @@ async fn api_discover_local() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    let resp = Client::new()
+    let resp: serde_json::Value = Client::new()
         .get(inst.api_url("/v1/discover/local"))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert!(resp.status().is_success());
+    assert!(
+        resp["agents"].is_array(),
+        "discover local should return agents array"
+    );
 
     inst.stop();
 }
@@ -1234,16 +1288,19 @@ async fn api_get_thread_not_found() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    let resp = Client::new()
+    let resp: serde_json::Value = Client::new()
         .get(inst.api_url("/v1/threads/nonexistent-thread-id"))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    // Should be 404 or empty
+    // Thread endpoint returns empty messages array for unknown threads
+    let messages = resp["messages"].as_array();
     assert!(
-        resp.status().as_u16() == 404 || resp.status().is_success(),
-        "nonexistent thread should return 404 or empty, got {}",
-        resp.status()
+        messages.map(|m| m.is_empty()).unwrap_or(true),
+        "nonexistent thread should have no messages: {resp}"
     );
 
     inst.stop();
@@ -1310,16 +1367,46 @@ async fn cli_block_unblock() {
     // Block via CLI
     inst.cmd().args(["block", fake_key]).assert().success();
 
+    // Verify block took effect via API
+    let peers: serde_json::Value = Client::new()
+        .get(inst.api_url("/v1/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let peers_str = serde_json::to_string(&peers).unwrap();
+    assert!(
+        peers_str.contains("blocked"),
+        "CLI block should add to peers: {peers_str}"
+    );
+
     // Unblock via CLI
     inst.cmd().args(["unblock", fake_key]).assert().success();
+
+    // Verify unblock took effect
+    let peers: serde_json::Value = Client::new()
+        .get(inst.api_url("/v1/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let still_blocked = peers["peers"]
+        .as_array()
+        .map(|a| a.iter().any(|p| p["status"] == "blocked"))
+        .unwrap_or(false);
+    assert!(!still_blocked, "CLI unblock should remove from peers");
 
     inst.stop();
 }
 
-// ── Two daemons: verify receiver gets message ────────────────
+// ── Two daemons: verify thread_id preserved ──────────────────
 
 #[tokio::test]
-async fn two_daemons_receiver_gets_message() {
+async fn two_daemons_thread_preserved() {
     let mut alice = Instance::new("alice-rx", "open", 30110, 30109);
     let mut bob = Instance::new("bob-rx", "open", 30120, 30119);
     alice.start();
@@ -1328,30 +1415,18 @@ async fn two_daemons_receiver_gets_message() {
 
     let client = Client::new();
 
-    // Start SSE listener on bob in background
-    let bob_sse_url = bob.api_url("/v1/messages");
-    let sse_handle = tokio::spawn(async move {
-        let resp = Client::builder()
-            .timeout(Duration::from_secs(8))
-            .build()
-            .unwrap()
-            .get(&bob_sse_url)
-            .send()
-            .await;
-        match resp {
-            Ok(r) => r.text().await.unwrap_or_default(),
-            Err(_) => String::new(),
-        }
-    });
+    // Start SSE listener on bob
+    let sse_handle = bob.spawn_sse_listener(10);
 
     sleep(Duration::from_millis(500)).await;
 
-    // Send from alice to bob
+    // Send with explicit thread_id
     let send_resp: serde_json::Value = client
-        .post(alice.api_url("/v1/messages"))
+        .post(format!("{}?wait=true", alice.api_url("/v1/messages")))
         .json(&serde_json::json!({
             "to": "toq://127.0.0.1:30119/bob-rx",
-            "body": {"text": "integration test message"}
+            "body": {"text": "threaded message"},
+            "thread_id": "test-thread-42"
         }))
         .send()
         .await
@@ -1360,26 +1435,28 @@ async fn two_daemons_receiver_gets_message() {
         .await
         .unwrap();
 
-    let send_str = serde_json::to_string(&send_resp).unwrap().to_lowercase();
+    assert_eq!(
+        send_resp["status"].as_str().unwrap_or(""),
+        "delivered",
+        "message should be delivered: {send_resp}"
+    );
+    assert_eq!(
+        send_resp["thread_id"].as_str().unwrap_or(""),
+        "test-thread-42",
+        "thread_id should be preserved in response"
+    );
 
-    // Wait for delivery
     sleep(Duration::from_secs(3)).await;
+    sse_handle.abort();
+    let sse_output = sse_handle.await.unwrap_or_default();
 
-    // Check what bob's SSE received
-    let sse_output = tokio::time::timeout(Duration::from_secs(5), sse_handle)
-        .await
-        .unwrap_or(Ok(String::new()))
-        .unwrap_or_default();
-
-    // Either: message was delivered and bob got it via SSE,
-    // or: connection failed (TLS handshake) which is expected without key exchange.
-    // Both are valid. The test verifies the plumbing works end-to-end.
     assert!(
-        send_str.contains("queued")
-            || send_str.contains("delivered")
-            || send_str.contains("error")
-            || !sse_output.is_empty(),
-        "expected structured response: {send_str}"
+        sse_output.contains("threaded message"),
+        "bob should receive the message: {sse_output}"
+    );
+    assert!(
+        sse_output.contains("test-thread-42"),
+        "bob should see the thread_id: {sse_output}"
     );
 
     alice.stop();
@@ -1396,12 +1473,17 @@ async fn two_daemons_streaming() {
     bob.start();
     sleep(API_STARTUP_DELAY).await;
 
-    // Send streaming from alice to bob
+    // Start SSE listener on bob
+    let sse_handle = bob.spawn_sse_listener(10);
+
+    sleep(Duration::from_millis(500)).await;
+
+    // Send streaming from alice to bob (streaming endpoint always returns queued)
     let resp: serde_json::Value = Client::new()
         .post(alice.api_url("/v1/messages/stream"))
         .json(&serde_json::json!({
             "to": "toq://127.0.0.1:30139/bob-st",
-            "body": {"text": "streaming test"}
+            "body": {"text": "streaming content"}
         }))
         .send()
         .await
@@ -1410,11 +1492,20 @@ async fn two_daemons_streaming() {
         .await
         .unwrap();
 
-    let resp_str = serde_json::to_string(&resp).unwrap().to_lowercase();
-    // Should get queued/delivered/error (not a crash)
+    assert_eq!(
+        resp["status"].as_str().unwrap_or(""),
+        "queued",
+        "streaming returns queued (fire-and-forget): {resp}"
+    );
+
+    // Give time for delivery
+    sleep(Duration::from_secs(5)).await;
+    sse_handle.abort();
+    let sse_output = sse_handle.await.unwrap_or_default();
+
     assert!(
-        resp_str.contains("queued") || resp_str.contains("delivered") || resp_str.contains("error"),
-        "streaming should return structured response: {resp_str}"
+        sse_output.contains("streaming content"),
+        "bob should receive streaming message via SSE: {sse_output}"
     );
 
     alice.stop();
@@ -1598,7 +1689,10 @@ async fn cli_clear_logs() {
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
-    inst.cmd().arg("clear-logs").assert().success();
+    inst.cmd().arg("clear-logs").assert().success().stdout(
+        predicate::str::contains("clear").or(predicate::str::contains("Clear")
+            .or(predicate::str::contains("delete").or(predicate::str::contains("Delete")))),
+    );
 
     inst.stop();
 }
