@@ -127,12 +127,17 @@ pub async fn connect_to_peer(
     local_card: &AgentCard,
     local_features: &Features,
 ) -> Result<(ConnectionInfo, tokio_rustls::client::TlsStream<TcpStream>), Error> {
-    // TCP + TLS
-    let tcp = TcpStream::connect(target)
+    // TCP connect (with timeout)
+    let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(target))
         .await
+        .map_err(|_| Error::Io("connection timeout".into()))?
         .map_err(|e| Error::Io(e.to_string()))?;
+
+    // TLS connect (with timeout)
     let client_cfg = transport::client_config();
-    let mut tls_stream = transport::tls_connect(tcp, client_cfg).await?;
+    let mut tls_stream = timeout(HANDSHAKE_TIMEOUT, transport::tls_connect(tcp, client_cfg))
+        .await
+        .map_err(|_| Error::Io("TLS handshake timeout".into()))??;
 
     // Handshake (with timeout)
     let hs = timeout(
