@@ -9,6 +9,7 @@ use crate::error::Error;
 #[serde(default)]
 pub struct Config {
     pub agent_name: String,
+    pub host: String,
     pub port: u16,
     pub connection_mode: String,
     pub verbosity: String,
@@ -60,6 +61,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             agent_name: "agent".into(),
+            host: "localhost".into(),
             port: DEFAULT_PORT,
             connection_mode: "approval".into(),
             verbosity: "non-technical".into(),
@@ -96,6 +98,12 @@ impl Config {
     pub fn with_agent(mut self, name: String, mode: String) -> Self {
         self.agent_name = name;
         self.connection_mode = mode;
+        self
+    }
+
+    /// Set the host address.
+    pub fn with_host(mut self, host: String) -> Self {
+        self.host = host;
         self
     }
 

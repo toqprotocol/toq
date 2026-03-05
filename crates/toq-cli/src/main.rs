@@ -79,6 +79,9 @@ enum Commands {
         /// Agent name (default: agent).
         #[arg(long)]
         agent_name: Option<String>,
+        /// Host address: IP or hostname other agents use to reach this endpoint.
+        #[arg(long)]
+        host: Option<String>,
         /// Connection mode: open, allowlist, approval (default: approval).
         #[arg(long)]
         connection_mode: Option<String>,
@@ -153,12 +156,14 @@ async fn main() {
         Commands::Setup {
             non_interactive,
             agent_name,
+            host,
             connection_mode,
             adapter,
             framework,
         } => run_setup(
             non_interactive,
             agent_name,
+            host,
             connection_mode,
             adapter,
             framework,
@@ -305,9 +310,21 @@ fn load_card(config: &Config, keypair: &Keypair) -> AgentCard {
 
 // --- Commands ---
 
+/// Detect the machine's primary non-loopback IP address, falling back to "localhost".
+fn detect_host() -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| {
+            s.connect("8.8.8.8:80")?;
+            s.local_addr()
+        })
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|_| "localhost".into())
+}
+
 fn run_setup(
     non_interactive: bool,
     cli_agent_name: Option<String>,
+    cli_host: Option<String>,
     cli_connection_mode: Option<String>,
     cli_adapter: Option<String>,
     cli_framework: Option<String>,
@@ -346,6 +363,15 @@ fn run_setup(
                     e.to_string().into(),
                 )),
             })
+            .prompt()?
+    };
+
+    let host = if non_interactive {
+        cli_host.unwrap_or_else(detect_host)
+    } else {
+        let detected = detect_host();
+        inquire::Text::new("Host address (IP or hostname for other agents to reach you)")
+            .with_default(&cli_host.unwrap_or(detected))
             .prompt()?
     };
 
@@ -426,6 +452,7 @@ fn run_setup(
 
     let config = Config::default()
         .with_agent(agent_name.clone(), connection_mode.clone())
+        .with_host(host.clone())
         .with_adapter(adapter.clone());
     config.save(&Config::default_path())?;
 
@@ -435,7 +462,7 @@ fn run_setup(
     let pub_key_short = pub_key.strip_prefix("ed25519:").unwrap_or(&pub_key);
 
     if non_interactive {
-        println!("Setup complete: toq://localhost/{agent_name}");
+        println!("Setup complete: toq://{host}/{agent_name}");
         println!("Public key: {pub_key_short}");
         return Ok(());
     }
@@ -451,7 +478,7 @@ fn run_setup(
     table.add_row(vec!["Agent", &agent_name]);
     table.add_row(vec!["Mode", &connection_mode]);
     table.add_row(vec!["Adapter", &adapter]);
-    table.add_row(vec!["Address", &format!("toq://localhost/{agent_name}")]);
+    table.add_row(vec!["Address", &format!("toq://{host}/{agent_name}")]);
     table.add_row(vec!["Public key", pub_key_short]);
     println!("\n{table}");
 
@@ -532,7 +559,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     setup_logging();
     write_pid()?;
 
-    let address = Address::new("localhost", &config.agent_name)?;
+    let address = Address::new(&config.host, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
     let local_card = load_card(&config, &keypair);
@@ -1110,7 +1137,7 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
 
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
-    let address = Address::new("localhost", &config.agent_name)?;
+    let address = Address::new(&config.host, &config.agent_name)?;
     let target_addr: Address = target.parse()?;
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
@@ -1164,7 +1191,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let (certs, key) =
         keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
 
-    let address = Address::new("localhost", &config.agent_name)?;
+    let address = Address::new(&config.host, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
     let local_card = load_card(&config, &keypair);
