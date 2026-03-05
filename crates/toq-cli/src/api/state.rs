@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 use toq_core::config::Config;
 use toq_core::crypto::Keypair;
@@ -19,7 +19,7 @@ const MESSAGE_CHANNEL_CAPACITY: usize = 256;
 #[derive(Clone)]
 pub struct ApiState {
     pub config: Arc<Mutex<Config>>,
-    pub keypair: Arc<Keypair>,
+    pub keypair: Arc<RwLock<Keypair>>,
     pub address: Arc<Address>,
     pub active_connections: Arc<AtomicUsize>,
     pub total_messages: Arc<AtomicUsize>,
@@ -44,7 +44,7 @@ impl ApiState {
         let (message_tx, _) = broadcast::channel(MESSAGE_CHANNEL_CAPACITY);
         Self {
             config: Arc::new(Mutex::new(config)),
-            keypair: Arc::new(keypair),
+            keypair: Arc::new(RwLock::new(keypair)),
             address: Arc::new(address),
             active_connections,
             total_messages,

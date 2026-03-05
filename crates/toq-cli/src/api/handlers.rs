@@ -65,6 +65,7 @@ pub async fn send_message(
     Query(params): Query<SendMessageParams>,
     Json(req): Json<SendMessageRequest>,
 ) -> Response {
+    let keypair = state.keypair.read().await;
     let target_addr: Address = match req.to.parse() {
         Ok(a) => a,
         Err(_) => {
@@ -96,7 +97,7 @@ pub async fn send_message(
     let local_card = AgentCard {
         name: config.agent_name.clone(),
         description: None,
-        public_key: state.keypair.public_key().to_encoded(),
+        public_key: keypair.public_key().to_encoded(),
         protocol_version: PROTOCOL_VERSION.into(),
         capabilities: Vec::new(),
         accept_files: config.accept_files,
@@ -115,7 +116,7 @@ pub async fn send_message(
 
     let connect_result = server::connect_to_peer(
         &connect_addr,
-        &state.keypair,
+        &keypair,
         &state.address,
         &local_card,
         &features,
@@ -140,7 +141,7 @@ pub async fn send_message(
 
     let msg_result = messaging::send_message(
         &mut stream,
-        &state.keypair,
+        &keypair,
         SendParams {
             from: &state.address,
             to: std::slice::from_ref(&target_addr),
@@ -201,7 +202,7 @@ pub async fn send_message(
         };
         let _ = toq_core::connection::send_disconnect(
             &mut stream,
-            &state.keypair,
+            &keypair,
             &state.address,
             &target_addr,
             next_seq,
@@ -211,7 +212,7 @@ pub async fn send_message(
     } else {
         let _ = toq_core::connection::send_disconnect(
             &mut stream,
-            &state.keypair,
+            &keypair,
             &state.address,
             &target_addr,
             next_seq,
@@ -242,12 +243,14 @@ pub async fn stream_messages(
 }
 
 pub async fn cancel_message(Path(_id): Path<String>) -> Response {
-    // Cancel requires tracking which connection a message was sent on.
-    // Will be implemented with connection pooling.
+    // Messages are delivered synchronously: connect, send, ack, close. By the
+    // time the API returns, the receiver already has the message. Cancellation
+    // requires persistent connections with an in-flight window where messages
+    // can be intercepted before the receiver processes them.
     error_response(
         StatusCode::NOT_IMPLEMENTED,
         ERR_INVALID_REQUEST,
-        "Message cancellation requires connection pooling (not yet implemented)",
+        "Message cancellation is not supported",
     )
 }
 
@@ -482,6 +485,7 @@ pub async fn health_check() -> &'static str {
 
 pub async fn get_status(State(state): State<ApiState>) -> Response {
     let config = state.config.lock().await;
+    let keypair = state.keypair.read().await;
     json_ok(StatusResponse {
         status: "running",
         address: state.address.to_string(),
@@ -491,7 +495,7 @@ pub async fn get_status(State(state): State<ApiState>) -> Response {
         error_count: state.error_count.load(Ordering::Relaxed),
         backpressure_active: false,
         version: env!("CARGO_PKG_VERSION"),
-        public_key: state.keypair.public_key().to_encoded(),
+        public_key: keypair.public_key().to_encoded(),
     })
 }
 
@@ -714,25 +718,13 @@ pub async fn check_upgrade() -> Response {
 
 // ── Keys ────────────────────────────────────────────────────
 
-pub async fn rotate_keys(State(_state): State<ApiState>) -> Response {
-    // Load the current on-disk keypair to ensure proof chain integrity.
-    // If someone already rotated without restarting, the on-disk key
-    // differs from the in-memory key, and we must use the on-disk one.
-    let current_keypair = match keystore::load_keypair(&keystore::identity_key_path()) {
-        Ok(kp) => kp,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INVALID_REQUEST,
-                format!("Cannot load current keys: {e}"),
-            );
-        }
-    };
-
+pub async fn rotate_keys(State(state): State<ApiState>) -> Response {
+    let current_keypair = state.keypair.read().await;
     let old_public = current_keypair.public_key().to_encoded();
     let new_keypair = toq_core::crypto::Keypair::generate();
     let new_public = new_keypair.public_key();
     let proof = toq_core::crypto::generate_rotation_proof(&current_keypair, &new_public);
+    drop(current_keypair);
 
     if let Err(e) = keystore::save_keypair(&new_keypair, &keystore::identity_key_path()) {
         return error_response(
@@ -741,6 +733,9 @@ pub async fn rotate_keys(State(_state): State<ApiState>) -> Response {
             format!("Failed to save new keys: {e}"),
         );
     }
+
+    // Update in-memory keypair so all subsequent requests use the new key
+    *state.keypair.write().await = new_keypair;
 
     json_ok(KeyRotationResponse {
         old_public_key: old_public,
@@ -1042,10 +1037,11 @@ pub async fn update_config(
 
 pub async fn get_agent_card(State(state): State<ApiState>) -> Response {
     let config = state.config.lock().await;
+    let keypair = state.keypair.read().await;
     json_ok(AgentCardResponse {
         name: config.agent_name.clone(),
         description: None,
-        public_key: state.keypair.public_key().to_encoded(),
+        public_key: keypair.public_key().to_encoded(),
         protocol_version: PROTOCOL_VERSION.into(),
         capabilities: vec![],
         accept_files: config.accept_files,
