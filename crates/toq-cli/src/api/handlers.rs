@@ -138,6 +138,7 @@ pub async fn send_message(
     let content_type = req
         .content_type
         .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
+    let body_for_forward = req.body.clone();
 
     let msg_result = messaging::send_message(
         &mut stream,
@@ -173,6 +174,85 @@ pub async fn send_message(
     };
 
     state.total_messages.fetch_add(1, Ordering::Relaxed);
+
+    // Track thread participants and forward to others
+    {
+        let self_addr = state.address.to_string();
+        let target_str = target_addr.to_string();
+        let mut tp = state.thread_participants.lock().await;
+        let participants = tp.entry(thread_id.clone()).or_default();
+        participants.insert(target_str.clone());
+
+        // Forward to other participants in the background
+        let others: Vec<String> = participants
+            .iter()
+            .filter(|a| *a != &target_str && *a != &self_addr)
+            .cloned()
+            .collect();
+        if !others.is_empty() {
+            let state2 = state.clone();
+            let body = body_for_forward.clone();
+            let tid = thread_id.clone();
+            let close = req.close_thread;
+            tokio::spawn(async move {
+                let kp = state2.keypair.read().await;
+                let config = state2.config.lock().await;
+                let card = AgentCard {
+                    name: config.agent_name.clone(),
+                    description: None,
+                    public_key: kp.public_key().to_encoded(),
+                    protocol_version: PROTOCOL_VERSION.into(),
+                    capabilities: Vec::new(),
+                    accept_files: config.accept_files,
+                    max_file_size: if config.accept_files {
+                        Some(config.max_file_size as u64)
+                    } else {
+                        None
+                    },
+                    max_message_size: Some(config.max_message_size),
+                    connection_mode: Some(config.connection_mode.clone()),
+                };
+                drop(config);
+                let feats = Features::default();
+                for addr_str in others {
+                    if let Ok(addr) = addr_str.parse::<Address>() {
+                        let connect_addr = format!("{}:{}", addr.host, addr.port);
+                        if let Ok((_info, mut s)) = server::connect_to_peer(
+                            &connect_addr,
+                            &kp,
+                            &state2.address,
+                            &card,
+                            &feats,
+                        )
+                        .await
+                        {
+                            let _ = messaging::send_message(
+                                &mut s,
+                                &kp,
+                                SendParams {
+                                    from: &state2.address,
+                                    to: std::slice::from_ref(&addr),
+                                    sequence: INITIAL_MESSAGE_SEQUENCE,
+                                    body: body.clone(),
+                                    thread_id: Some(tid.clone()),
+                                    reply_to: None,
+                                    priority: None,
+                                    content_type: Some(DEFAULT_CONTENT_TYPE.into()),
+                                    ttl: None,
+                                    msg_type: if close {
+                                        Some(toq_core::types::MessageType::ThreadClose)
+                                    } else {
+                                        None
+                                    },
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            });
+        }
+    }
 
     // Broadcast thread.close locally so our own SSE subscribers know
     if req.close_thread {

@@ -667,6 +667,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         sessions.clone(),
     );
     let message_tx = api_state.message_tx.clone();
+    let thread_participants = api_state.thread_participants.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
     let api_address = format!("127.0.0.1:{}", config.api_port);
@@ -703,6 +704,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let conn_count = active_connections.clone();
                 let msg_count = total_messages.clone();
                 let msg_tx = message_tx.clone();
+                let tp = thread_participants.clone();
 
                 tokio::spawn(async move {
                     // Lock policy only for accept_connection, release after
@@ -740,6 +742,16 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         tracing::info!("message from {}: {}", agent_msg.from, agent_msg.id);
                                         msg_count.fetch_add(1, Ordering::Relaxed);
+
+                                        // Track thread participants
+                                        if let Some(ref tid) = agent_msg.thread_id {
+                                            let mut tp_guard = tp.lock().await;
+                                            let participants = tp_guard.entry(tid.clone()).or_default();
+                                            participants.insert(agent_msg.from.clone());
+                                            for addr in &envelope.to {
+                                                participants.insert(addr.to_string());
+                                            }
+                                        }
 
                                         // Broadcast to SSE subscribers
                                         let _ = msg_tx.send(api::types::IncomingMessage {

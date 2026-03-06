@@ -38,6 +38,8 @@ pub struct ApiState {
     pub policy: Arc<Mutex<PolicyEngine>>,
     pub sessions: Arc<Mutex<SessionStore>>,
     pub active_streams: Arc<Mutex<std::collections::HashMap<String, ActiveStream>>>,
+    pub thread_participants:
+        Arc<Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>>,
 }
 
 impl ApiState {
@@ -64,6 +66,7 @@ impl ApiState {
             policy,
             sessions,
             active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            thread_participants: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
