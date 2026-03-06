@@ -18,6 +18,7 @@ where
         .write_all(data)
         .await
         .map_err(|e| Error::Io(e.to_string()))?;
+    stream.flush().await.map_err(|e| Error::Io(e.to_string()))?;
     Ok(())
 }
 
