@@ -140,12 +140,26 @@ pub async fn send_message(
         .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
     let body_for_forward = req.body.clone();
 
+    // Build full recipient list: explicit target + all known thread participants
+    let all_recipients: Vec<Address> = {
+        let self_addr = state.address.to_string();
+        let target_str = target_addr.to_string();
+        let mut tp = state.thread_participants.lock().await;
+        let participants = tp.entry(thread_id.clone()).or_default();
+        participants.insert(target_str);
+        participants
+            .iter()
+            .filter(|a| *a != &self_addr)
+            .filter_map(|a| a.parse::<Address>().ok())
+            .collect()
+    };
+
     let msg_result = messaging::send_message(
         &mut stream,
         &keypair,
         SendParams {
             from: &state.address,
-            to: std::slice::from_ref(&target_addr),
+            to: &all_recipients,
             sequence: INITIAL_MESSAGE_SEQUENCE,
             body: req.body,
             thread_id: Some(thread_id.clone()),
