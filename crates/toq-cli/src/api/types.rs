@@ -252,6 +252,40 @@ pub const ERR_INVALID_PASSPHRASE: &str = "invalid_passphrase";
 pub const STATUS_QUEUED: &str = "queued";
 pub const STATUS_DELIVERED: &str = "delivered";
 
+// ── Streaming ───────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct StreamStartRequest {
+    pub to: String,
+    pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamStartResponse {
+    pub stream_id: String,
+    pub thread_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamChunkRequest {
+    pub stream_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamChunkResponse {
+    pub chunk_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamEndRequest {
+    pub stream_id: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub close_thread: bool,
+}
+
 /// GitHub releases API URL for upgrade checks.
 pub const RELEASES_API_URL: &str = "https://api.github.com/repos/toqprotocol/toq/releases/latest";
 pub const RELEASES_FALLBACK_URL: &str = "https://github.com/toqprotocol/toq/releases";

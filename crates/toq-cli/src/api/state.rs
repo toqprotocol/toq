@@ -15,6 +15,14 @@ use crate::api::types::IncomingMessage;
 /// Channel capacity for incoming message broadcast.
 const MESSAGE_CHANNEL_CAPACITY: usize = 256;
 
+/// An active outbound stream connection.
+pub struct ActiveStream {
+    pub stream: toq_core::server::ClientTlsStream,
+    pub peer_address: Address,
+    pub sequence: u64,
+    pub thread_id: Option<String>,
+}
+
 /// Shared state accessible by all API handlers.
 #[derive(Clone)]
 pub struct ApiState {
@@ -28,6 +36,7 @@ pub struct ApiState {
     pub message_tx: broadcast::Sender<IncomingMessage>,
     pub policy: Arc<Mutex<PolicyEngine>>,
     pub sessions: Arc<Mutex<SessionStore>>,
+    pub active_streams: Arc<Mutex<std::collections::HashMap<String, ActiveStream>>>,
 }
 
 impl ApiState {
@@ -53,6 +62,7 @@ impl ApiState {
             message_tx,
             policy,
             sessions,
+            active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 }

@@ -263,13 +263,201 @@ pub async fn send_streaming_message(
     State(state): State<ApiState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Response {
-    // For v1, streaming send uses the same path as regular send.
-    // The daemon decides whether to chunk based on message size.
     let params = SendMessageParams {
         wait: false,
         timeout: default_timeout(),
     };
     send_message(State(state), Query(params), Json(req)).await
+}
+
+// ── Stream API ──────────────────────────────────────────────
+
+pub async fn stream_start(
+    State(state): State<ApiState>,
+    Json(req): Json<StreamStartRequest>,
+) -> Response {
+    let keypair = state.keypair.read().await;
+    let target_addr: Address = match req.to.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ADDRESS,
+                "Invalid toq address",
+            );
+        }
+    };
+
+    let config = state.config.lock().await;
+    let local_card = AgentCard {
+        name: config.agent_name.clone(),
+        description: None,
+        public_key: keypair.public_key().to_encoded(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        capabilities: Vec::new(),
+        accept_files: config.accept_files,
+        max_file_size: if config.accept_files {
+            Some(config.max_file_size as u64)
+        } else {
+            None
+        },
+        max_message_size: Some(config.max_message_size),
+        connection_mode: Some(config.connection_mode.clone()),
+    };
+    drop(config);
+
+    let features = toq_core::negotiation::Features::default();
+    let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
+
+    let connect_result = server::connect_to_peer(
+        &connect_addr,
+        &keypair,
+        &state.address,
+        &local_card,
+        &features,
+    )
+    .await;
+
+    let (info, stream) = match connect_result {
+        Ok(r) => r,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                ERR_NOT_REACHABLE,
+                format!("Cannot reach target: {e}"),
+            );
+        }
+    };
+
+    let stream_id = toq_core::now_utc();
+    let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
+
+    state.active_streams.lock().await.insert(
+        stream_id.clone(),
+        crate::api::state::ActiveStream {
+            stream,
+            peer_address: info.peer_address,
+            sequence: INITIAL_MESSAGE_SEQUENCE,
+            thread_id: Some(thread_id.clone()),
+        },
+    );
+
+    json_ok(StreamStartResponse {
+        stream_id,
+        thread_id,
+    })
+}
+
+pub async fn stream_chunk(
+    State(state): State<ApiState>,
+    Json(req): Json<StreamChunkRequest>,
+) -> Response {
+    let keypair = state.keypair.read().await;
+    let mut streams = state.active_streams.lock().await;
+    let active = match streams.get_mut(&req.stream_id) {
+        Some(s) => s,
+        None => {
+            return error_response(StatusCode::NOT_FOUND, ERR_NOT_FOUND, "Stream not found");
+        }
+    };
+
+    let result = toq_core::streaming::send_chunk(
+        &mut active.stream,
+        &keypair,
+        toq_core::streaming::ChunkParams {
+            from: &state.address,
+            to: &active.peer_address,
+            stream_id: &req.stream_id,
+            data: serde_json::json!({"text": req.text}),
+            sequence: active.sequence,
+            thread_id: active.thread_id.clone(),
+            content_type: None,
+        },
+    )
+    .await;
+
+    match result {
+        Ok(id) => {
+            active.sequence += 1;
+            json_ok(StreamChunkResponse {
+                chunk_id: id.to_string(),
+            })
+        }
+        Err(e) => {
+            streams.remove(&req.stream_id);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_NOT_REACHABLE,
+                format!("Failed to send chunk: {e}"),
+            )
+        }
+    }
+}
+
+pub async fn stream_end(
+    State(state): State<ApiState>,
+    Json(req): Json<StreamEndRequest>,
+) -> Response {
+    let keypair = state.keypair.read().await;
+    let mut streams = state.active_streams.lock().await;
+    let active = match streams.remove(&req.stream_id) {
+        Some(s) => s,
+        None => {
+            return error_response(StatusCode::NOT_FOUND, ERR_NOT_FOUND, "Stream not found");
+        }
+    };
+
+    let data = req.text.map(|t| serde_json::json!({"text": t}));
+    let mut stream = active.stream;
+    let mut seq = active.sequence;
+
+    let result = toq_core::streaming::send_end(
+        &mut stream,
+        &keypair,
+        &state.address,
+        &active.peer_address,
+        &req.stream_id,
+        data,
+        seq,
+        active.thread_id.clone(),
+    )
+    .await;
+
+    let end_id = match result {
+        Ok(id) => id,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_NOT_REACHABLE,
+                format!("Failed to end stream: {e}"),
+            );
+        }
+    };
+    seq += 1;
+
+    if req.close_thread {
+        let _ = toq_core::messaging::send_message(
+            &mut stream,
+            &keypair,
+            toq_core::messaging::SendParams {
+                from: &state.address,
+                to: std::slice::from_ref(&active.peer_address),
+                sequence: seq,
+                body: None,
+                thread_id: active.thread_id,
+                reply_to: None,
+                priority: None,
+                content_type: None,
+                ttl: None,
+                msg_type: Some(toq_core::types::MessageType::ThreadClose),
+            },
+        )
+        .await;
+    }
+
+    json_ok(StreamChunkResponse {
+        chunk_id: end_id.to_string(),
+    })
 }
 
 // ── Threads ─────────────────────────────────────────────────

@@ -2,6 +2,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
+/// Type alias for a client-side TLS stream.
+pub type ClientTlsStream = tokio_rustls::client::TlsStream<TcpStream>;
+
 use crate::card::{self, AgentCard};
 use crate::connection::ConnectionState;
 use crate::constants::{HANDSHAKE_TIMEOUT, NEGOTIATION_TIMEOUT};
