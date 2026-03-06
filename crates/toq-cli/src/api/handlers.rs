@@ -337,8 +337,10 @@ pub async fn stream_start(
         crate::api::state::ActiveStream {
             stream,
             peer_address: info.peer_address,
+            peer_public_key: info.peer_public_key,
             sequence: INITIAL_MESSAGE_SEQUENCE,
             thread_id: Some(thread_id.clone()),
+            pending_acks: 0,
         },
     );
 
@@ -379,6 +381,7 @@ pub async fn stream_chunk(
     match result {
         Ok(id) => {
             active.sequence += 1;
+            active.pending_acks += 1;
             json_ok(StreamChunkResponse {
                 chunk_id: id.to_string(),
             })
@@ -406,6 +409,7 @@ pub async fn stream_end(
             return error_response(StatusCode::NOT_FOUND, ERR_NOT_FOUND, "Stream not found");
         }
     };
+    drop(streams);
 
     let data = req.text.map(|t| serde_json::json!({"text": t}));
     let mut stream = active.stream;
@@ -435,6 +439,9 @@ pub async fn stream_end(
     };
     seq += 1;
 
+    // +1 for StreamEnd ACK
+    let mut acks_expected = active.pending_acks + 1;
+
     if req.close_thread {
         let _ = toq_core::messaging::send_message(
             &mut stream,
@@ -453,7 +460,26 @@ pub async fn stream_end(
             },
         )
         .await;
+        acks_expected += 1;
     }
+
+    // Drain all pending ACKs before dropping the connection.
+    // This confirms the receiver processed every message.
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        for _ in 0..acks_expected {
+            if framing::recv_envelope(
+                &mut stream,
+                &active.peer_public_key,
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+    })
+    .await;
 
     json_ok(StreamChunkResponse {
         chunk_id: end_id.to_string(),

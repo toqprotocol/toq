@@ -19,8 +19,10 @@ const MESSAGE_CHANNEL_CAPACITY: usize = 256;
 pub struct ActiveStream {
     pub stream: toq_core::server::ClientTlsStream,
     pub peer_address: Address,
+    pub peer_public_key: toq_core::crypto::PublicKey,
     pub sequence: u64,
     pub thread_id: Option<String>,
+    pub pending_acks: usize,
 }
 
 /// Shared state accessible by all API handlers.
