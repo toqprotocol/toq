@@ -47,6 +47,7 @@ pub struct SendMessageResponse {
 pub struct MultiSendResult {
     pub to: String,
     pub id: String,
+    pub thread_id: String,
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -54,7 +55,6 @@ pub struct MultiSendResult {
 
 #[derive(Debug, Serialize)]
 pub struct MultiSendResponse {
-    pub thread_id: String,
     pub results: Vec<MultiSendResult>,
     pub timestamp: String,
 }

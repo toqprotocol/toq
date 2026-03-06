@@ -126,6 +126,7 @@ pub async fn send_message(
     };
     drop(config);
 
+    let has_explicit_thread = req.thread_id.is_some();
     let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
     let content_type = req
         .content_type
@@ -158,14 +159,18 @@ pub async fn send_message(
         .await;
     }
 
-    // Multiple recipients: send to each in parallel
+    // Multiple recipients: each gets an independent 1:1 thread
     let mut handles = Vec::with_capacity(targets.len());
     for target in targets {
         let kp = keypair.clone();
         let card = local_card.clone();
         let feats = features.clone();
         let state2 = state.clone();
-        let tid = thread_id.clone();
+        let tid = if has_explicit_thread {
+            thread_id.clone()
+        } else {
+            toq_core::now_utc()
+        };
         let ct = content_type.clone();
         let body = req.body.clone();
         let reply = req.reply_to.clone();
@@ -181,6 +186,7 @@ pub async fn send_message(
                     return MultiSendResult {
                         to: addr_str,
                         id: String::new(),
+                        thread_id: tid,
                         status: "failed",
                         error: Some(format!("Cannot reach target: {e}")),
                     };
@@ -194,7 +200,7 @@ pub async fn send_message(
                     to: std::slice::from_ref(&target),
                     sequence: INITIAL_MESSAGE_SEQUENCE,
                     body,
-                    thread_id: Some(tid),
+                    thread_id: Some(tid.clone()),
                     reply_to: reply,
                     priority: None,
                     content_type: Some(ct),
@@ -209,6 +215,7 @@ pub async fn send_message(
                     return MultiSendResult {
                         to: addr_str,
                         id: String::new(),
+                        thread_id: tid,
                         status: "failed",
                         error: Some(format!("Failed to send: {e}")),
                     };
@@ -233,6 +240,7 @@ pub async fn send_message(
             MultiSendResult {
                 to: addr_str,
                 id: msg_id.to_string(),
+                thread_id: tid,
                 status: STATUS_DELIVERED,
                 error: None,
             }
@@ -246,6 +254,7 @@ pub async fn send_message(
             Err(_) => results.push(MultiSendResult {
                 to: String::new(),
                 id: String::new(),
+                thread_id: String::new(),
                 status: "failed",
                 error: Some("Internal error".into()),
             }),
@@ -269,7 +278,6 @@ pub async fn send_message(
     (
         StatusCode::OK,
         Json(MultiSendResponse {
-            thread_id,
             results,
             timestamp: toq_core::now_utc(),
         }),
