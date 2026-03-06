@@ -174,6 +174,20 @@ pub async fn send_message(
 
     state.total_messages.fetch_add(1, Ordering::Relaxed);
 
+    // Broadcast thread.close locally so our own SSE subscribers know
+    if req.close_thread {
+        let _ = state.message_tx.send(IncomingMessage {
+            id: msg_id.to_string(),
+            msg_type: "thread.close".into(),
+            from: state.address.to_string(),
+            body: None,
+            thread_id: Some(thread_id.clone()),
+            reply_to: None,
+            content_type: None,
+            timestamp: toq_core::now_utc(),
+        });
+    }
+
     let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
 
     if params.wait {
@@ -451,7 +465,7 @@ pub async fn stream_end(
                 to: std::slice::from_ref(&active.peer_address),
                 sequence: seq,
                 body: None,
-                thread_id: active.thread_id,
+                thread_id: active.thread_id.clone(),
                 reply_to: None,
                 priority: None,
                 content_type: None,
@@ -461,6 +475,18 @@ pub async fn stream_end(
         )
         .await;
         acks_expected += 1;
+
+        // Broadcast locally so our own SSE subscribers know
+        let _ = state.message_tx.send(IncomingMessage {
+            id: req.stream_id.clone(),
+            msg_type: "thread.close".into(),
+            from: state.address.to_string(),
+            body: None,
+            thread_id: active.thread_id,
+            reply_to: None,
+            content_type: None,
+            timestamp: toq_core::now_utc(),
+        });
     }
 
     // Drain all pending ACKs before dropping the connection.
