@@ -354,7 +354,6 @@ pub async fn stream_start(
             peer_public_key: info.peer_public_key,
             sequence: INITIAL_MESSAGE_SEQUENCE,
             thread_id: Some(thread_id.clone()),
-            pending_acks: 0,
         },
     );
 
@@ -395,7 +394,15 @@ pub async fn stream_chunk(
     match result {
         Ok(id) => {
             active.sequence += 1;
-            active.pending_acks += 1;
+            // Read ACK to prevent TCP deadlock: receiver's send_ack blocks
+            // if our receive buffer is full, which blocks recv_envelope,
+            // which means no more chunks get processed.
+            let _ = framing::recv_envelope(
+                &mut active.stream,
+                &active.peer_public_key,
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )
+            .await;
             json_ok(StreamChunkResponse {
                 chunk_id: id.to_string(),
             })
@@ -454,7 +461,7 @@ pub async fn stream_end(
     seq += 1;
 
     // +1 for StreamEnd ACK
-    let mut acks_expected = active.pending_acks + 1;
+    let mut acks_expected = 1;
 
     if req.close_thread {
         let _ = toq_core::messaging::send_message(
