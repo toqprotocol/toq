@@ -138,28 +138,13 @@ pub async fn send_message(
     let content_type = req
         .content_type
         .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
-    let body_for_forward = req.body.clone();
-
-    // Build full recipient list: explicit target + all known thread participants
-    let all_recipients: Vec<Address> = {
-        let self_addr = state.address.to_string();
-        let target_str = target_addr.to_string();
-        let mut tp = state.thread_participants.lock().await;
-        let participants = tp.entry(thread_id.clone()).or_default();
-        participants.insert(target_str);
-        participants
-            .iter()
-            .filter(|a| *a != &self_addr)
-            .filter_map(|a| a.parse::<Address>().ok())
-            .collect()
-    };
 
     let msg_result = messaging::send_message(
         &mut stream,
         &keypair,
         SendParams {
             from: &state.address,
-            to: &all_recipients,
+            to: std::slice::from_ref(&target_addr),
             sequence: INITIAL_MESSAGE_SEQUENCE,
             body: req.body,
             thread_id: Some(thread_id.clone()),
@@ -189,102 +174,19 @@ pub async fn send_message(
 
     state.total_messages.fetch_add(1, Ordering::Relaxed);
 
-    // Track thread participants and forward to others
-    {
-        let self_addr = state.address.to_string();
-        let target_str = target_addr.to_string();
-        let mut tp = state.thread_participants.lock().await;
-        let participants = tp.entry(thread_id.clone()).or_default();
-        participants.insert(target_str.clone());
-
-        // Forward to other participants in the background
-        let others: Vec<String> = participants
-            .iter()
-            .filter(|a| *a != &target_str && *a != &self_addr)
-            .cloned()
-            .collect();
-        if !others.is_empty() {
-            let state2 = state.clone();
-            let body = body_for_forward.clone();
-            let tid = thread_id.clone();
-            let close = req.close_thread;
-            let all_recip = all_recipients.clone();
-            tokio::spawn(async move {
-                let kp = state2.keypair.read().await;
-                let config = state2.config.lock().await;
-                let card = AgentCard {
-                    name: config.agent_name.clone(),
-                    description: None,
-                    public_key: kp.public_key().to_encoded(),
-                    protocol_version: PROTOCOL_VERSION.into(),
-                    capabilities: Vec::new(),
-                    accept_files: config.accept_files,
-                    max_file_size: if config.accept_files {
-                        Some(config.max_file_size as u64)
-                    } else {
-                        None
-                    },
-                    max_message_size: Some(config.max_message_size),
-                    connection_mode: Some(config.connection_mode.clone()),
-                };
-                drop(config);
-                let feats = Features::default();
-                for addr_str in others {
-                    if let Ok(addr) = addr_str.parse::<Address>() {
-                        let connect_addr = format!("{}:{}", addr.host, addr.port);
-                        if let Ok((_info, mut s)) = server::connect_to_peer(
-                            &connect_addr,
-                            &kp,
-                            &state2.address,
-                            &card,
-                            &feats,
-                        )
-                        .await
-                        {
-                            let _ = messaging::send_message(
-                                &mut s,
-                                &kp,
-                                SendParams {
-                                    from: &state2.address,
-                                    to: &all_recip,
-                                    sequence: INITIAL_MESSAGE_SEQUENCE,
-                                    body: body.clone(),
-                                    thread_id: Some(tid.clone()),
-                                    reply_to: None,
-                                    priority: None,
-                                    content_type: Some(DEFAULT_CONTENT_TYPE.into()),
-                                    ttl: None,
-                                    msg_type: if close {
-                                        Some(toq_core::types::MessageType::ThreadClose)
-                                    } else {
-                                        None
-                                    },
-                                },
-                            )
-                            .await;
-                        }
-                    }
-                }
-            });
-        }
+    // Broadcast thread.close locally so our own SSE subscribers know
+    if req.close_thread {
+        let _ = state.message_tx.send(IncomingMessage {
+            id: msg_id.to_string(),
+            msg_type: "thread.close".into(),
+            from: state.address.to_string(),
+            body: None,
+            thread_id: Some(thread_id.clone()),
+            reply_to: None,
+            content_type: None,
+            timestamp: toq_core::now_utc(),
+        });
     }
-
-    // Broadcast outgoing message on local SSE so our agent sees all thread messages
-    let _ = state.message_tx.send(IncomingMessage {
-        id: msg_id.to_string(),
-        msg_type: if req.close_thread {
-            "thread.close"
-        } else {
-            "message.send"
-        }
-        .into(),
-        from: state.address.to_string(),
-        body: body_for_forward.clone(),
-        thread_id: Some(thread_id.clone()),
-        reply_to: None,
-        content_type: Some(DEFAULT_CONTENT_TYPE.into()),
-        timestamp: toq_core::now_utc(),
-    });
 
     let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
 
@@ -452,7 +354,6 @@ pub async fn stream_start(
             peer_public_key: info.peer_public_key,
             sequence: INITIAL_MESSAGE_SEQUENCE,
             thread_id: Some(thread_id.clone()),
-            buffered_text: String::new(),
         },
     );
 
@@ -493,7 +394,6 @@ pub async fn stream_chunk(
     match result {
         Ok(id) => {
             active.sequence += 1;
-            active.buffered_text.push_str(&req.text);
             // Read ACK to prevent TCP deadlock: receiver's send_ack blocks
             // if our receive buffer is full, which blocks recv_envelope,
             // which means no more chunks get processed.
@@ -560,10 +460,6 @@ pub async fn stream_end(
     };
     seq += 1;
 
-    let thread_id_for_forward = active.thread_id.clone();
-    let buffered = active.buffered_text.clone();
-    let peer_str = active.peer_address.to_string();
-
     // +1 for StreamEnd ACK
     let mut acks_expected = 1;
 
@@ -586,24 +482,19 @@ pub async fn stream_end(
         )
         .await;
         acks_expected += 1;
-    }
 
-    // Broadcast outgoing stream on local SSE
-    let _ = state.message_tx.send(IncomingMessage {
-        id: end_id.to_string(),
-        msg_type: if req.close_thread {
-            "thread.close"
-        } else {
-            "message.send"
-        }
-        .into(),
-        from: state.address.to_string(),
-        body: Some(serde_json::json!({"text": buffered})),
-        thread_id: thread_id_for_forward.clone(),
-        reply_to: None,
-        content_type: Some(DEFAULT_CONTENT_TYPE.into()),
-        timestamp: toq_core::now_utc(),
-    });
+        // Broadcast locally so our own SSE subscribers know
+        let _ = state.message_tx.send(IncomingMessage {
+            id: req.stream_id.clone(),
+            msg_type: "thread.close".into(),
+            from: state.address.to_string(),
+            body: None,
+            thread_id: active.thread_id,
+            reply_to: None,
+            content_type: None,
+            timestamp: toq_core::now_utc(),
+        });
+    }
 
     // Drain all pending ACKs before dropping the connection.
     // This confirms the receiver processed every message.
@@ -622,90 +513,6 @@ pub async fn stream_end(
         }
     })
     .await;
-
-    // Forward complete message to other thread participants
-    if let Some(ref tid) = thread_id_for_forward {
-        if !buffered.is_empty() {
-            let self_addr = state.address.to_string();
-            let tp = state.thread_participants.lock().await;
-            if let Some(participants) = tp.get(tid) {
-                let others: Vec<String> = participants
-                    .iter()
-                    .filter(|a| *a != &peer_str && *a != &self_addr)
-                    .cloned()
-                    .collect();
-                let all_recip: Vec<Address> = participants
-                    .iter()
-                    .filter(|a| *a != &self_addr)
-                    .filter_map(|a| a.parse::<Address>().ok())
-                    .collect();
-                drop(tp);
-                if !others.is_empty() {
-                    let state2 = state.clone();
-                    let body = serde_json::json!({"text": buffered});
-                    let tid2 = tid.clone();
-                    let close = req.close_thread;
-                    tokio::spawn(async move {
-                        let kp = state2.keypair.read().await;
-                        let config = state2.config.lock().await;
-                        let card = AgentCard {
-                            name: config.agent_name.clone(),
-                            description: None,
-                            public_key: kp.public_key().to_encoded(),
-                            protocol_version: PROTOCOL_VERSION.into(),
-                            capabilities: Vec::new(),
-                            accept_files: config.accept_files,
-                            max_file_size: if config.accept_files {
-                                Some(config.max_file_size as u64)
-                            } else {
-                                None
-                            },
-                            max_message_size: Some(config.max_message_size),
-                            connection_mode: Some(config.connection_mode.clone()),
-                        };
-                        drop(config);
-                        let feats = Features::default();
-                        for addr_str in others {
-                            if let Ok(addr) = addr_str.parse::<Address>() {
-                                let connect_addr = format!("{}:{}", addr.host, addr.port);
-                                if let Ok((_info, mut s)) = server::connect_to_peer(
-                                    &connect_addr,
-                                    &kp,
-                                    &state2.address,
-                                    &card,
-                                    &feats,
-                                )
-                                .await
-                                {
-                                    let _ = messaging::send_message(
-                                        &mut s,
-                                        &kp,
-                                        SendParams {
-                                            from: &state2.address,
-                                            to: &all_recip,
-                                            sequence: INITIAL_MESSAGE_SEQUENCE,
-                                            body: Some(body.clone()),
-                                            thread_id: Some(tid2.clone()),
-                                            reply_to: None,
-                                            priority: None,
-                                            content_type: Some(DEFAULT_CONTENT_TYPE.into()),
-                                            ttl: None,
-                                            msg_type: if close {
-                                                Some(toq_core::types::MessageType::ThreadClose)
-                                            } else {
-                                                None
-                                            },
-                                        },
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-        }
-    }
 
     json_ok(StreamChunkResponse {
         chunk_id: end_id.to_string(),
