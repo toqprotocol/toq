@@ -5,8 +5,15 @@ use serde::{Deserialize, Serialize};
 // ── Messages ────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Recipient {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
-    pub to: String,
+    pub to: Recipient,
     pub body: Option<serde_json::Value>,
     pub thread_id: Option<String>,
     pub reply_to: Option<String>,
@@ -15,11 +22,40 @@ pub struct SendMessageRequest {
     pub close_thread: bool,
 }
 
+impl Recipient {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            Recipient::Single(s) => vec![s],
+            Recipient::Multiple(v) => v,
+        }
+    }
+
+    pub fn is_single(&self) -> bool {
+        matches!(self, Recipient::Single(_))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct SendMessageResponse {
     pub id: String,
     pub status: &'static str,
     pub thread_id: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MultiSendResult {
+    pub to: String,
+    pub id: String,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MultiSendResponse {
+    pub thread_id: String,
+    pub results: Vec<MultiSendResult>,
     pub timestamp: String,
 }
 

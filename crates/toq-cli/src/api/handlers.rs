@@ -65,18 +65,33 @@ pub async fn send_message(
     Query(params): Query<SendMessageParams>,
     Json(req): Json<SendMessageRequest>,
 ) -> Response {
-    let keypair = state.keypair.read().await;
-    let target_addr: Address = match req.to.parse() {
-        Ok(a) => a,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ADDRESS,
-                "Invalid toq address",
-            );
-        }
-    };
+    let is_single = req.to.is_single();
+    let recipients = req.to.into_vec();
 
+    if recipients.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_REQUEST,
+            "No recipients specified",
+        );
+    }
+
+    // Parse all addresses upfront
+    let mut targets: Vec<Address> = Vec::with_capacity(recipients.len());
+    for r in &recipients {
+        match r.parse::<Address>() {
+            Ok(a) => targets.push(a),
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ADDRESS,
+                    format!("Invalid toq address: {r}"),
+                );
+            }
+        }
+    }
+
+    let keypair = state.keypair.read().await;
     let config = state.config.lock().await;
 
     // Check message size
@@ -111,17 +126,178 @@ pub async fn send_message(
     };
     drop(config);
 
+    let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
+    let content_type = req
+        .content_type
+        .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
     let features = Features::default();
-    let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
+    let msg_type = if req.close_thread {
+        Some(toq_core::types::MessageType::ThreadClose)
+    } else {
+        None
+    };
 
-    let connect_result = server::connect_to_peer(
-        &connect_addr,
-        &keypair,
-        &state.address,
-        &local_card,
-        &features,
+    // Single recipient: preserve existing behavior and response shape
+    if is_single {
+        return send_to_single(
+            &state,
+            &keypair,
+            &local_card,
+            &features,
+            SingleSendParams {
+                target_addr: targets.remove(0),
+                thread_id,
+                content_type,
+                body: req.body,
+                reply_to: req.reply_to,
+                msg_type,
+                close_thread: req.close_thread,
+            },
+            &params,
+        )
+        .await;
+    }
+
+    // Multiple recipients: send to each in parallel
+    let mut handles = Vec::with_capacity(targets.len());
+    for target in targets {
+        let kp = keypair.clone();
+        let card = local_card.clone();
+        let feats = features.clone();
+        let state2 = state.clone();
+        let tid = thread_id.clone();
+        let ct = content_type.clone();
+        let body = req.body.clone();
+        let reply = req.reply_to.clone();
+        let mt = msg_type.clone();
+        handles.push(tokio::spawn(async move {
+            let addr_str = target.to_string();
+            let connect_addr = format!("{}:{}", target.host, target.port);
+            let conn =
+                server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats).await;
+            let (info, mut stream) = match conn {
+                Ok(r) => r,
+                Err(e) => {
+                    return MultiSendResult {
+                        to: addr_str,
+                        id: String::new(),
+                        status: "failed",
+                        error: Some(format!("Cannot reach target: {e}")),
+                    };
+                }
+            };
+            let result = messaging::send_message(
+                &mut stream,
+                &kp,
+                SendParams {
+                    from: &state2.address,
+                    to: std::slice::from_ref(&target),
+                    sequence: INITIAL_MESSAGE_SEQUENCE,
+                    body,
+                    thread_id: Some(tid),
+                    reply_to: reply,
+                    priority: None,
+                    content_type: Some(ct),
+                    ttl: None,
+                    msg_type: mt,
+                },
+            )
+            .await;
+            let msg_id = match result {
+                Ok(id) => id,
+                Err(e) => {
+                    return MultiSendResult {
+                        to: addr_str,
+                        id: String::new(),
+                        status: "failed",
+                        error: Some(format!("Failed to send: {e}")),
+                    };
+                }
+            };
+            state2.total_messages.fetch_add(1, Ordering::Relaxed);
+            let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
+            let _ = toq_core::connection::send_disconnect(
+                &mut stream,
+                &kp,
+                &state2.address,
+                &target,
+                next_seq,
+            )
+            .await;
+            let _ = framing::recv_envelope(
+                &mut stream,
+                &info.peer_public_key,
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )
+            .await;
+            MultiSendResult {
+                to: addr_str,
+                id: msg_id.to_string(),
+                status: STATUS_DELIVERED,
+                error: None,
+            }
+        }));
+    }
+
+    let mut results = Vec::with_capacity(handles.len());
+    for h in handles {
+        match h.await {
+            Ok(r) => results.push(r),
+            Err(_) => results.push(MultiSendResult {
+                to: String::new(),
+                id: String::new(),
+                status: "failed",
+                error: Some("Internal error".into()),
+            }),
+        }
+    }
+
+    // Broadcast thread.close locally
+    if req.close_thread {
+        let _ = state.message_tx.send(IncomingMessage {
+            id: results.first().map(|r| r.id.clone()).unwrap_or_default(),
+            msg_type: "thread.close".into(),
+            from: state.address.to_string(),
+            body: None,
+            thread_id: Some(thread_id.clone()),
+            reply_to: None,
+            content_type: None,
+            timestamp: toq_core::now_utc(),
+        });
+    }
+
+    (
+        StatusCode::OK,
+        Json(MultiSendResponse {
+            thread_id,
+            results,
+            timestamp: toq_core::now_utc(),
+        }),
     )
-    .await;
+        .into_response()
+}
+
+struct SingleSendParams {
+    target_addr: Address,
+    thread_id: String,
+    content_type: String,
+    body: Option<serde_json::Value>,
+    reply_to: Option<String>,
+    msg_type: Option<toq_core::types::MessageType>,
+    close_thread: bool,
+}
+
+async fn send_to_single(
+    state: &ApiState,
+    keypair: &toq_core::crypto::Keypair,
+    local_card: &AgentCard,
+    features: &Features,
+    p: SingleSendParams,
+    params: &SendMessageParams,
+) -> Response {
+    let connect_addr = format!("{}:{}", p.target_addr.host, p.target_addr.port);
+    let connect_result =
+        server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features).await;
 
     let (info, mut stream) = match connect_result {
         Ok(r) => r,
@@ -134,29 +310,20 @@ pub async fn send_message(
         }
     };
 
-    let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
-    let content_type = req
-        .content_type
-        .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
-
     let msg_result = messaging::send_message(
         &mut stream,
-        &keypair,
+        keypair,
         SendParams {
             from: &state.address,
-            to: std::slice::from_ref(&target_addr),
+            to: std::slice::from_ref(&p.target_addr),
             sequence: INITIAL_MESSAGE_SEQUENCE,
-            body: req.body,
-            thread_id: Some(thread_id.clone()),
-            reply_to: req.reply_to,
+            body: p.body,
+            thread_id: Some(p.thread_id.clone()),
+            reply_to: p.reply_to,
             priority: None,
-            content_type: Some(content_type),
+            content_type: Some(p.content_type),
             ttl: None,
-            msg_type: if req.close_thread {
-                Some(toq_core::types::MessageType::ThreadClose)
-            } else {
-                None
-            },
+            msg_type: p.msg_type,
         },
     )
     .await;
@@ -174,14 +341,13 @@ pub async fn send_message(
 
     state.total_messages.fetch_add(1, Ordering::Relaxed);
 
-    // Broadcast thread.close locally so our own SSE subscribers know
-    if req.close_thread {
+    if p.close_thread {
         let _ = state.message_tx.send(IncomingMessage {
             id: msg_id.to_string(),
             msg_type: "thread.close".into(),
             from: state.address.to_string(),
             body: None,
-            thread_id: Some(thread_id.clone()),
+            thread_id: Some(p.thread_id.clone()),
             reply_to: None,
             content_type: None,
             timestamp: toq_core::now_utc(),
@@ -203,7 +369,7 @@ pub async fn send_message(
                 Json(SendMessageResponse {
                     id: msg_id.to_string(),
                     status: STATUS_DELIVERED,
-                    thread_id,
+                    thread_id: p.thread_id,
                     timestamp: toq_core::now_utc(),
                 }),
             )
@@ -221,9 +387,9 @@ pub async fn send_message(
         };
         let _ = toq_core::connection::send_disconnect(
             &mut stream,
-            &keypair,
+            keypair,
             &state.address,
-            &target_addr,
+            &p.target_addr,
             next_seq,
         )
         .await;
@@ -231,9 +397,9 @@ pub async fn send_message(
     } else {
         let _ = toq_core::connection::send_disconnect(
             &mut stream,
-            &keypair,
+            keypair,
             &state.address,
-            &target_addr,
+            &p.target_addr,
             next_seq,
         )
         .await;
@@ -242,7 +408,7 @@ pub async fn send_message(
             Json(SendMessageResponse {
                 id: msg_id.to_string(),
                 status: STATUS_QUEUED,
-                thread_id,
+                thread_id: p.thread_id,
                 timestamp: toq_core::now_utc(),
             }),
         )
