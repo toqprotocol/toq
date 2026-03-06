@@ -208,6 +208,7 @@ pub async fn send_message(
             let body = body_for_forward.clone();
             let tid = thread_id.clone();
             let close = req.close_thread;
+            let all_recip = all_recipients.clone();
             tokio::spawn(async move {
                 let kp = state2.keypair.read().await;
                 let config = state2.config.lock().await;
@@ -245,7 +246,7 @@ pub async fn send_message(
                                 &kp,
                                 SendParams {
                                     from: &state2.address,
-                                    to: std::slice::from_ref(&addr),
+                                    to: &all_recip,
                                     sequence: INITIAL_MESSAGE_SEQUENCE,
                                     body: body.clone(),
                                     thread_id: Some(tid.clone()),
@@ -633,6 +634,11 @@ pub async fn stream_end(
                     .filter(|a| *a != &peer_str && *a != &self_addr)
                     .cloned()
                     .collect();
+                let all_recip: Vec<Address> = participants
+                    .iter()
+                    .filter(|a| *a != &self_addr)
+                    .filter_map(|a| a.parse::<Address>().ok())
+                    .collect();
                 drop(tp);
                 if !others.is_empty() {
                     let state2 = state.clone();
@@ -676,7 +682,7 @@ pub async fn stream_end(
                                         &kp,
                                         SendParams {
                                             from: &state2.address,
-                                            to: std::slice::from_ref(&addr),
+                                            to: &all_recip,
                                             sequence: INITIAL_MESSAGE_SEQUENCE,
                                             body: Some(body.clone()),
                                             thread_id: Some(tid2.clone()),
