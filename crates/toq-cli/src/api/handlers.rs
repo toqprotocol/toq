@@ -204,6 +204,7 @@ pub async fn send_message(
             .cloned()
             .collect();
         if !others.is_empty() {
+            tracing::info!("forwarding to {} thread participants", others.len());
             let state2 = state.clone();
             let body = body_for_forward.clone();
             let tid = thread_id.clone();
