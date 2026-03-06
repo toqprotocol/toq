@@ -204,7 +204,6 @@ pub async fn send_message(
             .cloned()
             .collect();
         if !others.is_empty() {
-            tracing::info!("forwarding to {} thread participants", others.len());
             let state2 = state.clone();
             let body = body_for_forward.clone();
             let tid = thread_id.clone();
@@ -269,19 +268,22 @@ pub async fn send_message(
         }
     }
 
-    // Broadcast thread.close locally so our own SSE subscribers know
-    if req.close_thread {
-        let _ = state.message_tx.send(IncomingMessage {
-            id: msg_id.to_string(),
-            msg_type: "thread.close".into(),
-            from: state.address.to_string(),
-            body: None,
-            thread_id: Some(thread_id.clone()),
-            reply_to: None,
-            content_type: None,
-            timestamp: toq_core::now_utc(),
-        });
-    }
+    // Broadcast outgoing message on local SSE so our agent sees all thread messages
+    let _ = state.message_tx.send(IncomingMessage {
+        id: msg_id.to_string(),
+        msg_type: if req.close_thread {
+            "thread.close"
+        } else {
+            "message.send"
+        }
+        .into(),
+        from: state.address.to_string(),
+        body: body_for_forward.clone(),
+        thread_id: Some(thread_id.clone()),
+        reply_to: None,
+        content_type: Some(DEFAULT_CONTENT_TYPE.into()),
+        timestamp: toq_core::now_utc(),
+    });
 
     let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
 
