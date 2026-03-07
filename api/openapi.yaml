@@ -9,7 +9,7 @@ info:
 
     Default bind: 127.0.0.1:9010 (localhost only).
     Localhost-only. No authentication required (OS protects localhost).
-  version: 0.1.0
+  version: 0.1.0-dev.1
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -26,18 +26,22 @@ paths:
   /v1/messages:
     post:
       operationId: sendMessage
-      summary: Send a message to a remote agent.
+      summary: Send a message to one or more remote agents.
       description: |
-        By default (wait=false), returns immediately after the daemon
-        accepts the message. With wait=true, blocks until the remote
-        agent acknowledges receipt or the timeout expires.
+        When `to` is a string, sends to a single agent. Returns the
+        standard response. With wait=true, blocks until the remote
+        agent acknowledges receipt.
+
+        When `to` is an array, sends independently to each agent on
+        separate threads. Returns per-recipient results. The wait
+        parameter is not supported for multi-recipient sends.
       parameters:
         - name: wait
           in: query
           schema:
             type: boolean
             default: false
-          description: Block until the remote agent acknowledges receipt.
+          description: Block until the remote agent acknowledges receipt (single recipient only).
         - name: timeout
           in: query
           schema:
@@ -54,13 +58,15 @@ paths:
               $ref: "#/components/schemas/SendMessageRequest"
       responses:
         "200":
-          description: Message delivered (wait=true).
+          description: Message delivered (single recipient, wait=true) or multi-recipient results.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SendMessageResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/SendMessageResponse"
+                  - $ref: "#/components/schemas/MultiSendResponse"
         "202":
-          description: Message accepted for delivery (wait=false).
+          description: Message accepted for delivery (single recipient, wait=false).
           content:
             application/json:
               schema:
@@ -94,84 +100,100 @@ paths:
       operationId: streamMessages
       summary: Stream incoming messages via SSE.
       description: |
-        Live feed of incoming messages. Messages received while
-        disconnected are not replayed. Multiple concurrent connections
-        are supported.
+        Live feed of messages. Includes incoming messages from remote
+        agents and outgoing messages sent by this agent. Messages
+        received while disconnected are not replayed. Multiple
+        concurrent connections are supported.
       responses:
         "200":
-          description: SSE stream of incoming messages.
+          description: SSE stream of messages.
           content:
             text/event-stream:
               schema:
                 $ref: "#/components/schemas/IncomingMessage"
 
-  /v1/messages/{id}/cancel:
-    post:
-      operationId: cancelMessage
-      summary: Cancel a sent message.
-      description: |
-        Sends a message.cancel to the remote agent. If the message
-        has not been processed, the receiver discards it. If already
-        processed, the cancel is a no-op.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: ID of the message to cancel.
-      responses:
-        "200":
-          description: Cancel request sent.
-        "404":
-          description: Message not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "501":
-          description: Not yet implemented (requires connection pooling).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+  # ── Streaming ─────────────────────────────────────────────
 
-  /v1/messages/stream:
+  /v1/stream/start:
     post:
-      operationId: sendStreamingMessage
-      summary: Send a message using streaming delivery.
+      operationId: streamStart
+      summary: Open a streaming connection to a remote agent.
       description: |
-        Sends the message using the streaming protocol (chunked delivery).
-        The daemon handles chunking over the wire. The remote agent
-        receives chunks incrementally and reassembles them.
+        Opens a TLS connection to the target agent and returns a
+        stream ID. Use the stream ID with /v1/stream/chunk and
+        /v1/stream/end to send content incrementally.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SendMessageRequest"
+              $ref: "#/components/schemas/StreamStartRequest"
       responses:
-        "202":
-          description: Streaming message accepted for delivery.
+        "200":
+          description: Stream opened.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SendMessageResponse"
+                $ref: "#/components/schemas/StreamStartResponse"
         "400":
-          description: Invalid request or address.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "413":
-          description: Message body exceeds maximum size.
+          description: Invalid address.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "502":
           description: Cannot reach target agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/stream/chunk:
+    post:
+      operationId: streamChunk
+      summary: Send a text chunk on an open stream.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StreamChunkRequest"
+      responses:
+        "200":
+          description: Chunk sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamChunkResponse"
+        "404":
+          description: Stream not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/stream/end:
+    post:
+      operationId: streamEnd
+      summary: End a stream.
+      description: |
+        Sends a stream end marker. Optionally closes the thread.
+        The connection is closed after all ACKs are drained.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StreamEndRequest"
+      responses:
+        "200":
+          description: Stream ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamChunkResponse"
+        "404":
+          description: Stream not found.
           content:
             application/json:
               schema:
@@ -366,8 +388,6 @@ paths:
               schema:
                 type: string
                 example: "ok"
-        "405":
-          description: Method not allowed.
 
   /v1/status:
     get:
@@ -594,8 +614,14 @@ components:
         - to
       properties:
         to:
-          type: string
-          description: Target agent address.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: |
+            Target agent address (string) or multiple addresses (array).
+            When an array, each recipient gets an independent thread.
           example: "toq://peer.example.com/recipe-agent"
         body:
           description: Message content. Structure depends on content_type.
@@ -610,6 +636,10 @@ components:
           type: string
           default: "text/plain"
           description: MIME type of the body.
+        close_thread:
+          type: boolean
+          default: false
+          description: Close the thread after sending this message.
 
     SendMessageResponse:
       type: object
@@ -622,22 +652,51 @@ components:
         id:
           type: string
           format: uuid
-          description: Message ID assigned by the daemon.
         status:
           type: string
-          enum:
-            - queued
-            - delivered
-          description: |
-            "queued" when wait=false (delivery in progress).
-            "delivered" when wait=true (remote agent acked).
+          enum: [queued, delivered]
         thread_id:
           type: string
-          description: Thread ID (auto-generated if not provided in request).
         timestamp:
           type: string
           format: date-time
-          description: ISO 8601 UTC timestamp.
+
+    MultiSendResult:
+      type: object
+      required:
+        - to
+        - id
+        - thread_id
+        - status
+      properties:
+        to:
+          type: string
+          description: Recipient address.
+        id:
+          type: string
+          format: uuid
+        thread_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, failed]
+        error:
+          type: string
+          description: Error message (only present when status is failed).
+
+    MultiSendResponse:
+      type: object
+      required:
+        - results
+        - timestamp
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/MultiSendResult"
+        timestamp:
+          type: string
+          format: date-time
 
     IncomingMessage:
       type: object
@@ -650,30 +709,85 @@ components:
         id:
           type: string
           format: uuid
-          description: Message ID.
         type:
           type: string
-          description: Message type from the toq protocol.
+          description: |
+            Message type. Values: message.send, thread.close,
+            message.stream.chunk, message.stream.end.
           example: "message.send"
         from:
           type: string
-          description: Sender's toq address.
           example: "toq://peer.example.com/assistant"
         body:
-          description: Message content. Structure depends on content_type.
+          description: Message content.
         thread_id:
           type: string
-          description: Conversation thread ID.
         reply_to:
           type: string
-          description: ID of the message being replied to.
         content_type:
           type: string
-          description: MIME type of the body.
         timestamp:
           type: string
           format: date-time
-          description: ISO 8601 UTC timestamp.
+
+    # ── Streaming ───────────────────────────────────────────
+
+    StreamStartRequest:
+      type: object
+      required:
+        - to
+      properties:
+        to:
+          type: string
+          description: Target agent address.
+        thread_id:
+          type: string
+          description: Thread ID. Auto-generated if omitted.
+
+    StreamStartResponse:
+      type: object
+      required:
+        - stream_id
+        - thread_id
+      properties:
+        stream_id:
+          type: string
+        thread_id:
+          type: string
+
+    StreamChunkRequest:
+      type: object
+      required:
+        - stream_id
+        - text
+      properties:
+        stream_id:
+          type: string
+        text:
+          type: string
+
+    StreamChunkResponse:
+      type: object
+      required:
+        - chunk_id
+      properties:
+        chunk_id:
+          type: string
+
+    StreamEndRequest:
+      type: object
+      required:
+        - stream_id
+      properties:
+        stream_id:
+          type: string
+        text:
+          type: string
+          description: Optional final text to include with the stream end.
+        close_thread:
+          type: boolean
+          default: false
+          description: Close the thread after ending the stream.
 
     # ── Threads ─────────────────────────────────────────────
 
@@ -685,12 +799,10 @@ components:
       properties:
         thread_id:
           type: string
-          description: Thread ID.
         messages:
           type: array
           items:
             $ref: "#/components/schemas/IncomingMessage"
-          description: Messages in the thread, ordered by timestamp.
 
     # ── Peers ───────────────────────────────────────────────
 
@@ -704,24 +816,16 @@ components:
       properties:
         public_key:
           type: string
-          description: Peer's Ed25519 public key.
           example: "ed25519:abc123..."
         address:
           type: string
-          description: Peer's toq address.
           example: "toq://peer.example.com/assistant"
         status:
           type: string
-          enum:
-            - connected
-            - disconnected
-            - pending
-            - blocked
-          description: Peer relationship status.
+          enum: [connected, disconnected, pending, blocked]
         last_seen:
           type: string
           format: date-time
-          description: Last time this peer was seen.
 
     PeersResponse:
       type: object
@@ -745,17 +849,13 @@ components:
       properties:
         id:
           type: string
-          description: Approval request ID.
         public_key:
           type: string
-          description: Requesting agent's Ed25519 public key.
         address:
           type: string
-          description: Requesting agent's toq address.
         requested_at:
           type: string
           format: date-time
-          description: When the request was received.
 
     ApprovalsResponse:
       type: object
@@ -774,10 +874,7 @@ components:
       properties:
         decision:
           type: string
-          enum:
-            - approve
-            - deny
-          description: Whether to approve or deny the connection request.
+          enum: [approve, deny]
 
     # ── Discovery ───────────────────────────────────────────
 
@@ -789,11 +886,8 @@ components:
       properties:
         address:
           type: string
-          description: Discovered agent's toq address.
-          example: "toq://example.com/assistant"
         public_key:
           type: string
-          description: Agent's Ed25519 public key from DNS/mDNS record.
 
     DiscoverResponse:
       type: object
@@ -818,20 +912,15 @@ components:
       properties:
         session_id:
           type: string
-          description: Session ID for this connection.
         peer_address:
           type: string
-          description: Connected peer's toq address.
         peer_public_key:
           type: string
-          description: Connected peer's Ed25519 public key.
         connected_at:
           type: string
           format: date-time
-          description: When the connection was established.
         messages_exchanged:
           type: integer
-          description: Number of messages sent and received on this connection.
 
     ConnectionsResponse:
       type: object
@@ -852,7 +941,8 @@ components:
         - address
         - connection_mode
         - active_connections
-        - total_messages
+        - messages_in
+        - messages_out
         - error_count
         - backpressure_active
         - version
@@ -860,40 +950,30 @@ components:
       properties:
         status:
           type: string
-          enum:
-            - running
-          description: Daemon status.
+          enum: [running]
         address:
           type: string
-          description: This agent's toq address.
           example: "toq://localhost/agent"
         connection_mode:
           type: string
-          enum:
-            - open
-            - approval
-            - allowlist
-            - dns-verified
-          description: Who can connect to this agent.
+          enum: [open, approval, allowlist, dns-verified]
         active_connections:
           type: integer
-          description: Number of active peer connections.
-        total_messages:
+        messages_in:
           type: integer
-          description: Total messages sent and received since daemon started.
+          description: Messages received since daemon started.
+        messages_out:
+          type: integer
+          description: Messages sent since daemon started.
         error_count:
           type: integer
-          description: Total errors since daemon started.
         backpressure_active:
           type: boolean
-          description: Whether backpressure is currently active.
         version:
           type: string
-          description: toq daemon version.
-          example: "0.1.0"
+          example: "0.1.0-dev.1"
         public_key:
           type: string
-          description: This agent's Ed25519 public key.
           example: "ed25519:abc123..."
 
     # ── Logs ────────────────────────────────────────────────
@@ -908,18 +988,11 @@ components:
         timestamp:
           type: string
           format: date-time
-          description: When the log entry was recorded.
         level:
           type: string
-          enum:
-            - error
-            - warn
-            - info
-            - debug
-          description: Log level.
+          enum: [error, warn, info, debug]
         message:
           type: string
-          description: Log message.
 
     LogsResponse:
       type: object
@@ -941,16 +1014,11 @@ components:
       properties:
         name:
           type: string
-          description: Check name (e.g. "config", "identity_key", "tls_cert", "port", "disk").
         status:
           type: string
-          enum:
-            - ok
-            - fail
-          description: Check result.
+          enum: [ok, fail]
         detail:
           type: string
-          description: Additional detail (e.g. error message on failure).
 
     DiagnosticsResponse:
       type: object
@@ -964,7 +1032,6 @@ components:
             $ref: "#/components/schemas/DiagnosticCheck"
         issues:
           type: integer
-          description: Number of failed checks.
 
     UpgradeCheckResponse:
       type: object
@@ -974,16 +1041,12 @@ components:
       properties:
         current_version:
           type: string
-          description: Currently running version.
         up_to_date:
           type: boolean
-          description: Whether the current version is the latest.
         latest_version:
           type: string
-          description: Latest available version (only present if not up to date).
         download_url:
           type: string
-          description: URL to download the latest version.
 
     # ── Keys ────────────────────────────────────────────────
 
@@ -996,13 +1059,10 @@ components:
       properties:
         old_public_key:
           type: string
-          description: Previous Ed25519 public key.
         new_public_key:
           type: string
-          description: New Ed25519 public key.
         rotation_proof:
           type: string
-          description: Cryptographic proof linking old key to new key.
 
     # ── Backup ──────────────────────────────────────────────
 
@@ -1013,7 +1073,6 @@ components:
       properties:
         passphrase:
           type: string
-          description: Passphrase to encrypt the backup.
 
     BackupExportResponse:
       type: object
@@ -1022,7 +1081,6 @@ components:
       properties:
         data:
           type: string
-          description: Encrypted backup as a JSON string containing nonce and ciphertext.
 
     BackupImportRequest:
       type: object
@@ -1032,10 +1090,8 @@ components:
       properties:
         passphrase:
           type: string
-          description: Passphrase to decrypt the backup.
         data:
           type: string
-          description: Encrypted backup as a JSON string (from export).
 
     # ── Config ──────────────────────────────────────────────
 
@@ -1046,7 +1102,6 @@ components:
       properties:
         config:
           type: object
-          description: Full daemon configuration. Matches ~/.toq/config.toml structure.
 
     ConfigUpdateRequest:
       type: object
@@ -1063,34 +1118,25 @@ components:
       properties:
         name:
           type: string
-          description: Agent name.
         description:
           type: string
-          description: Agent description.
         public_key:
           type: string
-          description: Ed25519 public key.
         protocol_version:
           type: string
-          description: toq protocol version.
           example: "0.1"
         capabilities:
           type: array
           items:
             type: string
-          description: Negotiated capabilities.
         accept_files:
           type: boolean
-          description: Whether this agent accepts file transfers.
         max_file_size:
           type: integer
-          description: Maximum file size in bytes.
         max_message_size:
           type: integer
-          description: Maximum message size in bytes.
         connection_mode:
           type: string
-          description: Connection mode.
 
     # ── Error ───────────────────────────────────────────────
 
@@ -1116,7 +1162,5 @@ components:
                 - message_too_large
                 - invalid_passphrase
                 - invalid_config
-              description: Machine-readable error code.
             message:
               type: string
-              description: Human-readable error description.

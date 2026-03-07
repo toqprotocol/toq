@@ -1283,7 +1283,28 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Some(body) = &agent_msg.body {
                                             println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
                                         }
+                                        if envelope.msg_type == MessageType::ThreadClose {
+                                            println!("[thread closed]");
+                                        }
                                         println!("---");
+                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
+                                        seq += 1;
+                                    }
+                                    MessageType::StreamChunk => {
+                                        let agent_msg = AgentMessage::from_envelope(&envelope);
+                                        if let Some(text) = agent_msg.body.as_ref()
+                                            .and_then(|b| b.get("data"))
+                                            .and_then(|d| d.get("text"))
+                                            .and_then(|t| t.as_str())
+                                        {
+                                            print!("{text}");
+                                        }
+                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
+                                        seq += 1;
+                                    }
+                                    MessageType::StreamEnd => {
+                                        println!();
+                                        println!("--- stream end ---");
                                         let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
                                         seq += 1;
                                     }
