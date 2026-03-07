@@ -318,6 +318,10 @@ async fn send_to_single(
         }
     };
 
+    let body_for_sse = p.body.clone();
+    let reply_to_for_sse = p.reply_to.clone();
+    let content_type_for_sse = p.content_type.clone();
+
     let msg_result = messaging::send_message(
         &mut stream,
         keypair,
@@ -349,18 +353,22 @@ async fn send_to_single(
 
     state.messages_out.fetch_add(1, Ordering::Relaxed);
 
-    if p.close_thread {
-        let _ = state.message_tx.send(IncomingMessage {
-            id: msg_id.to_string(),
-            msg_type: "thread.close".into(),
-            from: state.address.to_string(),
-            body: None,
-            thread_id: Some(p.thread_id.clone()),
-            reply_to: None,
-            content_type: None,
-            timestamp: toq_core::now_utc(),
-        });
-    }
+    // Broadcast outgoing message on local SSE
+    let _ = state.message_tx.send(IncomingMessage {
+        id: msg_id.to_string(),
+        msg_type: if p.close_thread {
+            "thread.close"
+        } else {
+            "message.send"
+        }
+        .into(),
+        from: state.address.to_string(),
+        body: body_for_sse,
+        thread_id: Some(p.thread_id.clone()),
+        reply_to: reply_to_for_sse,
+        content_type: Some(content_type_for_sse),
+        timestamp: toq_core::now_utc(),
+    });
 
     let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
 
