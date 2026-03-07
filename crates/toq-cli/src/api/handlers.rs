@@ -127,7 +127,9 @@ pub async fn send_message(
     drop(config);
 
     let has_explicit_thread = req.thread_id.is_some();
-    let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
+    let thread_id = req
+        .thread_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let content_type = req
         .content_type
         .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.into());
@@ -169,7 +171,7 @@ pub async fn send_message(
         let tid = if has_explicit_thread {
             thread_id.clone()
         } else {
-            toq_core::now_utc()
+            uuid::Uuid::new_v4().to_string()
         };
         let ct = content_type.clone();
         let body = req.body.clone();
@@ -509,8 +511,10 @@ pub async fn stream_start(
         }
     };
 
-    let stream_id = toq_core::now_utc();
-    let thread_id = req.thread_id.unwrap_or_else(toq_core::now_utc);
+    let stream_id = uuid::Uuid::new_v4().to_string();
+    let thread_id = req
+        .thread_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     state.active_streams.lock().await.insert(
         stream_id.clone(),
