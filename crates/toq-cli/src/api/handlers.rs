@@ -241,7 +241,7 @@ pub async fn send_message(
                 to: addr_str,
                 id: msg_id.to_string(),
                 thread_id: tid,
-                status: STATUS_DELIVERED,
+                status: STATUS_QUEUED,
                 error: None,
             }
         }));
@@ -261,18 +261,25 @@ pub async fn send_message(
         }
     }
 
-    // Broadcast thread.close locally
-    if req.close_thread {
-        let _ = state.message_tx.send(IncomingMessage {
-            id: results.first().map(|r| r.id.clone()).unwrap_or_default(),
-            msg_type: "thread.close".into(),
-            from: state.address.to_string(),
-            body: None,
-            thread_id: Some(thread_id.clone()),
-            reply_to: None,
-            content_type: None,
-            timestamp: toq_core::now_utc(),
-        });
+    // Broadcast each successful send on local SSE
+    let msg_type_str = if req.close_thread {
+        "thread.close"
+    } else {
+        "message.send"
+    };
+    for r in &results {
+        if r.status == STATUS_DELIVERED || r.status == STATUS_QUEUED {
+            let _ = state.message_tx.send(IncomingMessage {
+                id: r.id.clone(),
+                msg_type: msg_type_str.into(),
+                from: state.address.to_string(),
+                body: req.body.clone(),
+                thread_id: Some(r.thread_id.clone()),
+                reply_to: req.reply_to.clone(),
+                content_type: Some(content_type.clone()),
+                timestamp: toq_core::now_utc(),
+            });
+        }
     }
 
     (
@@ -664,19 +671,24 @@ pub async fn stream_end(
         )
         .await;
         acks_expected += 1;
-
-        // Broadcast locally so our own SSE subscribers know
-        let _ = state.message_tx.send(IncomingMessage {
-            id: req.stream_id.clone(),
-            msg_type: "thread.close".into(),
-            from: state.address.to_string(),
-            body: None,
-            thread_id: active.thread_id,
-            reply_to: None,
-            content_type: None,
-            timestamp: toq_core::now_utc(),
-        });
     }
+
+    // Broadcast stream end on local SSE
+    let _ = state.message_tx.send(IncomingMessage {
+        id: end_id.to_string(),
+        msg_type: if req.close_thread {
+            "thread.close"
+        } else {
+            "message.stream.end"
+        }
+        .into(),
+        from: state.address.to_string(),
+        body: None,
+        thread_id: active.thread_id,
+        reply_to: None,
+        content_type: None,
+        timestamp: toq_core::now_utc(),
+    });
 
     // Drain all pending ACKs before dropping the connection.
     // This confirms the receiver processed every message.
