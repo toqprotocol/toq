@@ -626,16 +626,17 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Load adapter config
     let adapter_url = config.adapter_http.as_ref().map(|h| h.callback_url.clone());
 
-    // Shared connection counter
     let active_connections = std::sync::Arc::new(AtomicUsize::new(0));
-    let total_messages = std::sync::Arc::new(AtomicUsize::new(0));
+    let messages_in = std::sync::Arc::new(AtomicUsize::new(0));
+    let messages_out = std::sync::Arc::new(AtomicUsize::new(0));
 
     // Helper to update state file
     let state_address = address.to_string();
     let state_mode = config.connection_mode.clone();
     let state_port = config.port;
     let conn_counter = active_connections.clone();
-    let msg_counter = total_messages.clone();
+    let in_counter = messages_in.clone();
+    let out_counter = messages_out.clone();
     let update_state = move || {
         let state = serde_json::json!({
             "status": "running",
@@ -644,7 +645,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             "connection_mode": state_mode,
             "pid": std::process::id(),
             "active_connections": conn_counter.load(Ordering::Relaxed),
-            "total_messages": msg_counter.load(Ordering::Relaxed),
+            "messages_in": in_counter.load(Ordering::Relaxed),
+            "messages_out": out_counter.load(Ordering::Relaxed),
         });
         let _ = fs::write(
             state_path(),
@@ -656,16 +658,17 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let error_count = std::sync::Arc::new(AtomicUsize::new(0));
 
     // Start local API server
-    let api_state = api::ApiState::new(
-        config.clone(),
-        keypair.clone(),
-        address.clone(),
-        active_connections.clone(),
-        total_messages.clone(),
-        error_count.clone(),
-        policy.clone(),
-        sessions.clone(),
-    );
+    let api_state = api::ApiState::new(api::state::ApiStateParams {
+        config: config.clone(),
+        keypair: keypair.clone(),
+        address: address.clone(),
+        active_connections: active_connections.clone(),
+        messages_in: messages_in.clone(),
+        messages_out: messages_out.clone(),
+        error_count: error_count.clone(),
+        policy: policy.clone(),
+        sessions: sessions.clone(),
+    });
     let message_tx = api_state.message_tx.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
@@ -701,7 +704,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let sessions_clone = sessions.clone();
                 let adapter_url_clone = adapter_url.clone();
                 let conn_count = active_connections.clone();
-                let msg_count = total_messages.clone();
+                let msg_count = messages_in.clone();
                 let msg_tx = message_tx.clone();
 
                 tokio::spawn(async move {
@@ -893,8 +896,28 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
         println!("Toq is not running");
         return Ok(());
     }
-    let data = fs::read_to_string(sp)?;
-    let state: serde_json::Value = serde_json::from_str(&data)?;
+    let data = fs::read_to_string(&sp)?;
+    let file_state: serde_json::Value = serde_json::from_str(&data)?;
+    let port = file_state["port"].as_u64().unwrap_or(9010);
+
+    // Try live API first, fall back to state file
+    let state = match std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(mut tcp) => {
+            use std::io::{Read, Write};
+            let req = "GET /v1/status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+            let _ = tcp.write_all(req.as_bytes());
+            let mut buf = String::new();
+            let _ = tcp.read_to_string(&mut buf);
+            buf.split("\r\n\r\n")
+                .nth(1)
+                .and_then(|body| serde_json::from_str(body).ok())
+                .unwrap_or(file_state)
+        }
+        _ => file_state,
+    };
 
     let config = Config::load(&Config::default_path()).ok();
     let technical = config
@@ -920,8 +943,12 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
         state["active_connections"].as_u64().unwrap_or(0)
     );
     println!(
-        "  messages:        {}",
-        state["total_messages"].as_u64().unwrap_or(0)
+        "  messages in:     {}",
+        state["messages_in"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  messages out:    {}",
+        state["messages_out"].as_u64().unwrap_or(0)
     );
 
     if technical {

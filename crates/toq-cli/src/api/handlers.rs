@@ -221,7 +221,7 @@ pub async fn send_message(
                     };
                 }
             };
-            state2.total_messages.fetch_add(1, Ordering::Relaxed);
+            state2.messages_out.fetch_add(1, Ordering::Relaxed);
             let next_seq = INITIAL_MESSAGE_SEQUENCE + 1;
             let _ = toq_core::connection::send_disconnect(
                 &mut stream,
@@ -347,7 +347,7 @@ async fn send_to_single(
         }
     };
 
-    state.total_messages.fetch_add(1, Ordering::Relaxed);
+    state.messages_out.fetch_add(1, Ordering::Relaxed);
 
     if p.close_thread {
         let _ = state.message_tx.send(IncomingMessage {
@@ -917,7 +917,8 @@ pub async fn get_status(State(state): State<ApiState>) -> Response {
         address: state.address.to_string(),
         connection_mode: config.connection_mode.clone(),
         active_connections: state.active_connections.load(Ordering::Relaxed),
-        total_messages: state.total_messages.load(Ordering::Relaxed),
+        messages_in: state.messages_in.load(Ordering::Relaxed),
+        messages_out: state.messages_out.load(Ordering::Relaxed),
         error_count: state.error_count.load(Ordering::Relaxed),
         backpressure_active: false,
         version: env!("CARGO_PKG_VERSION"),
@@ -1504,16 +1505,17 @@ mod tests {
         let policy = Arc::new(Mutex::new(PolicyEngine::new(ConnectionMode::Approval)));
         let sessions = Arc::new(Mutex::new(SessionStore::new()));
 
-        ApiState::new(
-            Config::default(),
+        ApiState::new(crate::api::state::ApiStateParams {
+            config: Config::default(),
             keypair,
             address,
-            Arc::new(AtomicUsize::new(0)),
-            Arc::new(AtomicUsize::new(0)),
-            Arc::new(AtomicUsize::new(0)),
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            messages_in: Arc::new(AtomicUsize::new(0)),
+            messages_out: Arc::new(AtomicUsize::new(0)),
+            error_count: Arc::new(AtomicUsize::new(0)),
             policy,
             sessions,
-        )
+        })
     }
 
     async fn get_json(path: &str) -> (u16, serde_json::Value) {

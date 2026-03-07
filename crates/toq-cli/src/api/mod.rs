@@ -5,7 +5,7 @@
 //! and the daemon on the same machine.
 
 mod handlers;
-mod state;
+pub mod state;
 pub mod types;
 
 pub use state::ApiState;

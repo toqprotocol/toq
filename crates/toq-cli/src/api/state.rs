@@ -31,7 +31,8 @@ pub struct ApiState {
     pub keypair: Arc<RwLock<Keypair>>,
     pub address: Arc<Address>,
     pub active_connections: Arc<AtomicUsize>,
-    pub total_messages: Arc<AtomicUsize>,
+    pub messages_in: Arc<AtomicUsize>,
+    pub messages_out: Arc<AtomicUsize>,
     pub error_count: Arc<AtomicUsize>,
     pub shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     pub message_tx: broadcast::Sender<IncomingMessage>,
@@ -40,29 +41,34 @@ pub struct ApiState {
     pub active_streams: Arc<Mutex<std::collections::HashMap<String, ActiveStream>>>,
 }
 
+/// Parameters for constructing [`ApiState`].
+pub struct ApiStateParams {
+    pub config: Config,
+    pub keypair: Keypair,
+    pub address: Address,
+    pub active_connections: Arc<AtomicUsize>,
+    pub messages_in: Arc<AtomicUsize>,
+    pub messages_out: Arc<AtomicUsize>,
+    pub error_count: Arc<AtomicUsize>,
+    pub policy: Arc<Mutex<PolicyEngine>>,
+    pub sessions: Arc<Mutex<SessionStore>>,
+}
+
 impl ApiState {
-    pub fn new(
-        config: Config,
-        keypair: Keypair,
-        address: Address,
-        active_connections: Arc<AtomicUsize>,
-        total_messages: Arc<AtomicUsize>,
-        error_count: Arc<AtomicUsize>,
-        policy: Arc<Mutex<PolicyEngine>>,
-        sessions: Arc<Mutex<SessionStore>>,
-    ) -> Self {
+    pub fn new(p: ApiStateParams) -> Self {
         let (message_tx, _) = broadcast::channel(MESSAGE_CHANNEL_CAPACITY);
         Self {
-            config: Arc::new(Mutex::new(config)),
-            keypair: Arc::new(RwLock::new(keypair)),
-            address: Arc::new(address),
-            active_connections,
-            total_messages,
-            error_count,
+            config: Arc::new(Mutex::new(p.config)),
+            keypair: Arc::new(RwLock::new(p.keypair)),
+            address: Arc::new(p.address),
+            active_connections: p.active_connections,
+            messages_in: p.messages_in,
+            messages_out: p.messages_out,
+            error_count: p.error_count,
             shutdown_tx: Arc::new(Mutex::new(None)),
             message_tx,
-            policy,
-            sessions,
+            policy: p.policy,
+            sessions: p.sessions,
             active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
