@@ -187,7 +187,7 @@ pub async fn send_message(
                         to: addr_str,
                         id: String::new(),
                         thread_id: tid,
-                        status: "failed",
+                        status: STATUS_FAILED,
                         error: Some(format!("Cannot reach target: {e}")),
                     };
                 }
@@ -216,7 +216,7 @@ pub async fn send_message(
                         to: addr_str,
                         id: String::new(),
                         thread_id: tid,
-                        status: "failed",
+                        status: STATUS_FAILED,
                         error: Some(format!("Failed to send: {e}")),
                     };
                 }
@@ -255,7 +255,7 @@ pub async fn send_message(
                 to: String::new(),
                 id: String::new(),
                 thread_id: String::new(),
-                status: "failed",
+                status: STATUS_FAILED,
                 error: Some("Internal error".into()),
             }),
         }

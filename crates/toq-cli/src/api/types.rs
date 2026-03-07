@@ -288,6 +288,7 @@ pub const ERR_INVALID_PASSPHRASE: &str = "invalid_passphrase";
 
 pub const STATUS_QUEUED: &str = "queued";
 pub const STATUS_DELIVERED: &str = "delivered";
+pub const STATUS_FAILED: &str = "failed";
 
 // ── Streaming ───────────────────────────────────────────────
 
