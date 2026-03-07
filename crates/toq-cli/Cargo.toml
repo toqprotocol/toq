@@ -1,5 +1,5 @@
 [package]
-name = "toq"
+name = "toq-cli"
 description = "Encrypted agent-to-agent communication daemon and CLI"
 version = "0.1.0-dev.1"
 edition.workspace = true
