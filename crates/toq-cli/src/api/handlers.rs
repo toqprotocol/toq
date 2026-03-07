@@ -450,29 +450,6 @@ pub async fn stream_messages(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-pub async fn cancel_message(Path(_id): Path<String>) -> Response {
-    // Messages are delivered synchronously: connect, send, ack, close. By the
-    // time the API returns, the receiver already has the message. Cancellation
-    // requires persistent connections with an in-flight window where messages
-    // can be intercepted before the receiver processes them.
-    error_response(
-        StatusCode::NOT_IMPLEMENTED,
-        ERR_INVALID_REQUEST,
-        "Message cancellation is not supported",
-    )
-}
-
-pub async fn send_streaming_message(
-    State(state): State<ApiState>,
-    Json(req): Json<SendMessageRequest>,
-) -> Response {
-    let params = SendMessageParams {
-        wait: false,
-        timeout: default_timeout(),
-    };
-    send_message(State(state), Query(params), Json(req)).await
-}
-
 // ── Stream API ──────────────────────────────────────────────
 
 pub async fn stream_start(
@@ -1636,20 +1613,6 @@ mod tests {
         .await;
         assert_eq!(status, 400);
         assert_eq!(body["error"]["code"], "invalid_address");
-    }
-
-    #[tokio::test]
-    async fn cancel_returns_501() {
-        let app = crate::api::router(test_state());
-        let resp = app
-            .oneshot(
-                Request::post("/v1/messages/fake-id/cancel")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 501);
     }
 
     #[tokio::test]

@@ -19,8 +19,6 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         // Messages
         .route("/v1/messages", post(send_message).get(stream_messages))
-        .route("/v1/messages/{id}/cancel", post(cancel_message))
-        .route("/v1/messages/stream", post(send_streaming_message))
         // Stream API
         .route("/v1/stream/start", post(stream_start))
         .route("/v1/stream/chunk", post(stream_chunk))

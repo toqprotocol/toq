@@ -942,10 +942,9 @@ async fn api_send_streaming_to_unreachable() {
     sleep(API_STARTUP_DELAY).await;
 
     let resp = Client::new()
-        .post(inst.api_url("/v1/messages/stream"))
+        .post(inst.api_url("/v1/stream/start"))
         .json(&serde_json::json!({
-            "to": "toq://nonexistent.invalid/agent",
-            "body": {"text": "stream test"}
+            "to": "toq://nonexistent.invalid/agent"
         }))
         .send()
         .await
@@ -953,7 +952,6 @@ async fn api_send_streaming_to_unreachable() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     let body_str = serde_json::to_string(&body).unwrap().to_lowercase();
-    // Should error since peer is unreachable
     assert!(
         body_str.contains("error") || body_str.contains("fail"),
         "streaming to unreachable should error: {body_str}"
@@ -1309,25 +1307,6 @@ async fn api_get_thread_not_found() {
     inst.stop();
 }
 
-// ── Cancel message ───────────────────────────────────────────
-
-#[tokio::test]
-async fn api_cancel_nonexistent_message() {
-    let mut inst = Instance::new("cancel", "open", 30030, 30029);
-    inst.start();
-    sleep(API_STARTUP_DELAY).await;
-
-    let resp = Client::new()
-        .post(inst.api_url("/v1/messages/nonexistent-id/cancel"))
-        .send()
-        .await
-        .unwrap();
-    // Cancel requires persistent connections, returns 501
-    assert_eq!(resp.status().as_u16(), 501);
-
-    inst.stop();
-}
-
 // ── CLI send to unreachable ──────────────────────────────────
 
 #[tokio::test]
@@ -1481,12 +1460,13 @@ async fn two_daemons_streaming() {
 
     sleep(Duration::from_millis(500)).await;
 
-    // Send streaming from alice to bob (streaming endpoint always returns queued)
-    let resp: serde_json::Value = Client::new()
-        .post(alice.api_url("/v1/messages/stream"))
+    let client = Client::new();
+
+    // Open stream from alice to bob
+    let start_resp: serde_json::Value = client
+        .post(alice.api_url("/v1/stream/start"))
         .json(&serde_json::json!({
-            "to": "toq://127.0.0.1:30139/bob-st",
-            "body": {"text": "streaming content"}
+            "to": "toq://127.0.0.1:30139/bob-st"
         }))
         .send()
         .await
@@ -1495,11 +1475,30 @@ async fn two_daemons_streaming() {
         .await
         .unwrap();
 
-    assert_eq!(
-        resp["status"].as_str().unwrap_or(""),
-        "queued",
-        "streaming returns queued (fire-and-forget): {resp}"
-    );
+    let stream_id = start_resp["stream_id"].as_str().unwrap();
+
+    // Send chunks
+    client
+        .post(alice.api_url("/v1/stream/chunk"))
+        .json(&serde_json::json!({"stream_id": stream_id, "text": "streaming "}))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(alice.api_url("/v1/stream/chunk"))
+        .json(&serde_json::json!({"stream_id": stream_id, "text": "content"}))
+        .send()
+        .await
+        .unwrap();
+
+    // End stream
+    client
+        .post(alice.api_url("/v1/stream/end"))
+        .json(&serde_json::json!({"stream_id": stream_id}))
+        .send()
+        .await
+        .unwrap();
 
     // Give time for delivery
     sleep(Duration::from_secs(5)).await;
@@ -1507,8 +1506,8 @@ async fn two_daemons_streaming() {
     let sse_output = sse_handle.await.unwrap_or_default();
 
     assert!(
-        sse_output.contains("streaming content"),
-        "bob should receive streaming message via SSE: {sse_output}"
+        sse_output.contains("streaming") && sse_output.contains("content"),
+        "bob should receive streaming chunks via SSE: {sse_output}"
     );
 
     alice.stop();
