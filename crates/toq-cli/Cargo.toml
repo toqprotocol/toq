@@ -13,7 +13,7 @@ name = "toq"
 path = "src/main.rs"
 
 [dependencies]
-toq-core = { path = "../toq-core" }
+toq-core = { version = "0.1.0-dev.2", path = "../toq-core" }
 aes-gcm = "0.10"
 async-stream = "0.3"
 axum = "0.8"
