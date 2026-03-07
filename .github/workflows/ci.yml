@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --tests -- -D warnings
       - name: Unit tests
         run: cargo test --lib --test core_tests
       - name: Integration tests
