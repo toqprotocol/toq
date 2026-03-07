@@ -900,9 +900,11 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     }
     let data = fs::read_to_string(&sp)?;
     let file_state: serde_json::Value = serde_json::from_str(&data)?;
-    let api_port = file_state["api_port"]
-        .as_u64()
-        .expect("api_port missing from state file") as u16;
+    let api_port = file_state["api_port"].as_u64().unwrap_or_else(|| {
+        Config::load(&Config::default_path())
+            .map(|c| c.api_port as u64)
+            .unwrap_or(toq_core::constants::DEFAULT_API_PORT as u64)
+    }) as u16;
 
     // Try live API first, fall back to state file
     let state = match std::net::TcpStream::connect_timeout(
