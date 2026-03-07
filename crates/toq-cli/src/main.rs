@@ -515,7 +515,7 @@ fn run_setup(
     }
 
     println!("\n  Network security:");
-    println!("    Your endpoint listens on port 9009");
+    println!("    Your endpoint listens on port {}", config.port);
     println!("    If exposed to the internet, use a firewall");
     println!("    and 'approval' or 'allowlist' connection mode");
 
@@ -634,6 +634,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let state_address = address.to_string();
     let state_mode = config.connection_mode.clone();
     let state_port = config.port;
+    let state_api_port = config.api_port;
     let conn_counter = active_connections.clone();
     let in_counter = messages_in.clone();
     let out_counter = messages_out.clone();
@@ -642,6 +643,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             "status": "running",
             "address": state_address,
             "port": state_port,
+            "api_port": state_api_port,
             "connection_mode": state_mode,
             "pid": std::process::id(),
             "active_connections": conn_counter.load(Ordering::Relaxed),
@@ -898,11 +900,13 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     }
     let data = fs::read_to_string(&sp)?;
     let file_state: serde_json::Value = serde_json::from_str(&data)?;
-    let port = file_state["port"].as_u64().unwrap_or(9010);
+    let api_port = file_state["api_port"]
+        .as_u64()
+        .expect("api_port missing from state file") as u16;
 
     // Try live API first, fall back to state file
     let state = match std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().unwrap(),
+        &std::net::SocketAddr::from(([127, 0, 0, 1], api_port)),
         std::time::Duration::from_millis(500),
     ) {
         Ok(mut tcp) => {
