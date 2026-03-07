@@ -784,6 +784,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         let agent_msg = AgentMessage::from_envelope(&envelope);
                                         tracing::info!("stream from {}: {}", agent_msg.from, agent_msg.id);
 
+                                        if envelope.msg_type == MessageType::StreamEnd {
+                                            msg_count.fetch_add(1, Ordering::Relaxed);
+                                        }
+
                                         let _ = msg_tx.send(api::types::IncomingMessage {
                                             id: agent_msg.id.clone(),
                                             msg_type: agent_msg.msg_type.clone(),
