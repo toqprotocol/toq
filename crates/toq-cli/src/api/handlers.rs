@@ -932,7 +932,10 @@ pub async fn message_history(
     State(state): State<ApiState>,
     Query(params): Query<crate::api::types::HistoryQuery>,
 ) -> Response {
-    let limit = params.limit.unwrap_or(50).min(1000);
+    let config = state.config.lock().await;
+    let max = config.message_history_limit.unwrap_or(1000);
+    drop(config);
+    let limit = params.limit.unwrap_or(50).min(max);
     let history = state.history.lock().await;
     let messages = history.query(limit, params.from.as_deref(), params.since.as_deref());
     json_ok(crate::api::types::HistoryResponse { messages })

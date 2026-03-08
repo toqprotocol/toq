@@ -1093,6 +1093,11 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
             let _ = fs::remove_file(entry.path());
         }
     }
+    // Also clear message history file
+    let history = crate::api::state::history_path();
+    if history.exists() {
+        let _ = fs::remove_file(&history);
+    }
     println!("Logs cleared");
     Ok(())
 }
@@ -1274,6 +1279,8 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
             println!("Sent message {id} (status: {status})");
         } else if let Some(err) = body["error"]["message"].as_str() {
             eprintln!("Send failed: {err}");
+        } else {
+            eprintln!("Send failed: unexpected response");
         }
         return Ok(());
     }
