@@ -42,3 +42,4 @@ serde_json = "1"
 tempfile = "3.26"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tower = "0.5"
+urlencoding = "2.1.3"

@@ -1698,3 +1698,108 @@ async fn cli_clear_logs() {
 
     inst.stop();
 }
+
+// ── Revoke ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn api_revoke_approved_peer() {
+    let mut inst = Instance::new("api-revoke", "approval", 30240, 30239);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = reqwest::Client::new();
+    let kp = toq_core::crypto::Keypair::generate();
+    let fake_key = kp.public_key().to_encoded();
+    let encoded_key = urlencoding::encode(&fake_key);
+
+    // Approve
+    let resp = client
+        .post(inst.api_url(&format!("/v1/approvals/{encoded_key}")))
+        .json(&serde_json::json!({"decision": "approve"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // Verify approved via peers (approve creates a peer store entry)
+    let peers: serde_json::Value = client
+        .get(inst.api_url("/v1/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let peer_list = peers["peers"].as_array().unwrap();
+    assert!(
+        !peer_list.is_empty(),
+        "expected at least one peer after approve"
+    );
+
+    // Revoke
+    let resp = client
+        .post(inst.api_url(&format!("/v1/approvals/{encoded_key}/revoke")))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // Verify removed from peers
+    let peers: serde_json::Value = client
+        .get(inst.api_url("/v1/peers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let peer_list = peers["peers"].as_array().unwrap();
+    assert!(
+        peer_list.is_empty(),
+        "expected no peers after revoke, got: {peer_list:?}"
+    );
+
+    inst.stop();
+}
+
+// ── Message history ──────────────────────────────────────────
+
+#[tokio::test]
+async fn api_message_history_empty() {
+    let mut inst = Instance::new("api-hist-e", "open", 30260, 30259);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/messages/history"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["messages"].as_array().unwrap().len(), 0);
+
+    inst.stop();
+}
+
+#[tokio::test]
+async fn api_message_history_with_limit() {
+    let mut inst = Instance::new("api-hist-l", "open", 30280, 30279);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/messages/history?limit=5"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(resp["messages"].as_array().is_some());
+
+    inst.stop();
+}

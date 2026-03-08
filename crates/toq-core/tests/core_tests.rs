@@ -587,6 +587,67 @@ fn policy_unblock() {
     assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
 }
 
+#[test]
+fn policy_revoke_removes_access() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.revoke(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key()),
+        PolicyDecision::PendingApproval
+    );
+}
+
+#[test]
+fn policy_revoke_in_allowlist_mode() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    engine.allow(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.revoke(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+}
+
+#[test]
+fn policy_approve_works_across_modes() {
+    use toq_core::policy::*;
+
+    // Approve in approval mode, then switch to allowlist mode
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+
+    // Same key should work in a fresh allowlist engine if we allow it
+    let mut engine2 = PolicyEngine::new(ConnectionMode::Allowlist);
+    engine2.approve(&kp.public_key());
+    assert_eq!(engine2.check(&kp.public_key()), PolicyDecision::Accept);
+}
+
+#[test]
+fn policy_block_overrides_approved() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.approve(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.block(&kp.public_key());
+    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    // After unblock, not approved anymore
+    engine.unblock(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key()),
+        PolicyDecision::PendingApproval
+    );
+}
+
 // --- Replay ---
 
 #[test]

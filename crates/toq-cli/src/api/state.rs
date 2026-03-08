@@ -169,3 +169,98 @@ impl ApiState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::IncomingMessage;
+
+    fn make_msg(from: &str, text: &str, ts: &str) -> IncomingMessage {
+        IncomingMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            msg_type: "message.send".into(),
+            from: from.into(),
+            body: Some(serde_json::json!({"text": text})),
+            thread_id: None,
+            reply_to: None,
+            content_type: None,
+            timestamp: ts.into(),
+        }
+    }
+
+    #[test]
+    fn history_push_and_query() {
+        let mut h = MessageHistory::new(10);
+        h.push(&make_msg(
+            "toq://host/alice",
+            "hello",
+            "2026-03-08T01:00:00Z",
+        ));
+        h.push(&make_msg("toq://host/bob", "world", "2026-03-08T02:00:00Z"));
+        let msgs = h.query(10, None, None);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].from.contains("alice"));
+        assert!(msgs[1].from.contains("bob"));
+    }
+
+    #[test]
+    fn history_respects_limit() {
+        let mut h = MessageHistory::new(5);
+        for i in 0..10 {
+            h.push(&make_msg(
+                "toq://host/alice",
+                &format!("msg {i}"),
+                "2026-03-08T01:00:00Z",
+            ));
+        }
+        // Ring buffer should only keep last 5
+        assert_eq!(h.query(100, None, None).len(), 5);
+    }
+
+    #[test]
+    fn history_filter_by_from() {
+        let mut h = MessageHistory::new(10);
+        h.push(&make_msg(
+            "toq://host/alice",
+            "from alice",
+            "2026-03-08T01:00:00Z",
+        ));
+        h.push(&make_msg(
+            "toq://host/bob",
+            "from bob",
+            "2026-03-08T02:00:00Z",
+        ));
+        h.push(&make_msg(
+            "toq://host/alice",
+            "alice again",
+            "2026-03-08T03:00:00Z",
+        ));
+        let msgs = h.query(10, Some("alice"), None);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs.iter().all(|m| m.from.contains("alice")));
+    }
+
+    #[test]
+    fn history_filter_by_since() {
+        let mut h = MessageHistory::new(10);
+        h.push(&make_msg("toq://host/alice", "old", "2026-03-08T01:00:00Z"));
+        h.push(&make_msg("toq://host/alice", "new", "2026-03-08T03:00:00Z"));
+        let msgs = h.query(10, None, Some("2026-03-08T02:00:00Z"));
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].body.as_ref().unwrap().to_string().contains("new"));
+    }
+
+    #[test]
+    fn history_query_limit() {
+        let mut h = MessageHistory::new(10);
+        for i in 0..5 {
+            h.push(&make_msg(
+                "toq://host/alice",
+                &format!("msg {i}"),
+                "2026-03-08T01:00:00Z",
+            ));
+        }
+        let msgs = h.query(2, None, None);
+        assert_eq!(msgs.len(), 2);
+    }
+}
