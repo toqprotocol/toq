@@ -130,6 +130,13 @@ enum Commands {
     Approve { id: String },
     /// Deny a pending connection request (requires running daemon).
     Deny { id: String },
+    /// Show recent received messages (requires running daemon).
+    Messages {
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
     /// Run diagnostics: port, DNS, keys, agent responsiveness.
     Doctor,
     /// Update the toq binary.
@@ -186,6 +193,7 @@ async fn main() {
         Commands::Approvals => run_approvals().await,
         Commands::Approve { ref id } => run_approve(id).await,
         Commands::Deny { ref id } => run_deny(id).await,
+        Commands::Messages { ref from, limit } => run_messages(from.as_deref(), limit).await,
         Commands::Doctor => run_doctor().await,
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
@@ -672,6 +680,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         sessions: sessions.clone(),
     });
     let message_tx = api_state.message_tx.clone();
+    let history_store = api_state.history.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
     let api_address = format!("127.0.0.1:{}", config.api_port);
@@ -708,6 +717,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let conn_count = active_connections.clone();
                 let msg_count = messages_in.clone();
                 let msg_tx = message_tx.clone();
+                let history = history_store.clone();
 
                 tokio::spawn(async move {
                     // Lock policy only for accept_connection, release after
@@ -747,7 +757,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         msg_count.fetch_add(1, Ordering::Relaxed);
 
                                         // Broadcast to SSE subscribers
-                                        let _ = msg_tx.send(api::types::IncomingMessage {
+                                        let incoming = api::types::IncomingMessage {
                                             id: agent_msg.id.clone(),
                                             msg_type: agent_msg.msg_type.clone(),
                                             from: agent_msg.from.clone(),
@@ -756,7 +766,9 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                             reply_to: agent_msg.reply_to.clone(),
                                             content_type: agent_msg.content_type.clone(),
                                             timestamp: toq_core::now_utc(),
-                                        });
+                                        };
+                                        history.lock().await.push(&incoming);
+                                        let _ = msg_tx.send(incoming);
 
                                         // Deliver to adapter
                                         if let Some(ref url) = adapter_url_clone {
@@ -788,7 +800,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                             msg_count.fetch_add(1, Ordering::Relaxed);
                                         }
 
-                                        let _ = msg_tx.send(api::types::IncomingMessage {
+                                        let incoming = api::types::IncomingMessage {
                                             id: agent_msg.id.clone(),
                                             msg_type: agent_msg.msg_type.clone(),
                                             from: agent_msg.from.clone(),
@@ -797,7 +809,11 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                             reply_to: agent_msg.reply_to.clone(),
                                             content_type: agent_msg.content_type.clone(),
                                             timestamp: toq_core::now_utc(),
-                                        });
+                                        };
+                                        if envelope.msg_type == MessageType::StreamEnd {
+                                            history.lock().await.push(&incoming);
+                                        }
+                                        let _ = msg_tx.send(incoming);
 
                                         let _ = messaging::send_ack(
                                             &mut stream, &keypair_clone, &address_clone,
@@ -1095,6 +1111,34 @@ async fn run_approvals() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         _ => println!("No pending approvals"),
+    }
+    Ok(())
+}
+
+async fn run_messages(from: Option<&str>, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let mut url = format!("{}/v1/messages/history?limit={limit}", api_base()?);
+    if let Some(f) = from {
+        url.push_str(&format!("&from={}", urlencode_path(f)));
+    }
+    let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
+    let messages = resp["messages"].as_array();
+    match messages {
+        Some(msgs) if msgs.is_empty() => println!("No messages"),
+        Some(msgs) => {
+            for m in msgs {
+                let from = m["from"].as_str().unwrap_or("unknown");
+                let text = m["body"]["text"].as_str().unwrap_or("");
+                let ts = m["timestamp"].as_str().unwrap_or("");
+                let msg_type = m["type"].as_str().unwrap_or("message.send");
+                if msg_type == "thread.close" {
+                    println!("[{ts}] {from} closed the thread");
+                } else {
+                    println!("[{ts}] {from}: {text}");
+                }
+            }
+        }
+        None => println!("No messages"),
     }
     Ok(())
 }

@@ -37,6 +37,8 @@ pub fn router(state: ApiState) -> Router {
         // Approvals
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{id}", post(resolve_approval))
+        // History
+        .route("/v1/messages/history", get(message_history))
         // Connections
         .route("/v1/connections", get(list_connections))
         // Daemon

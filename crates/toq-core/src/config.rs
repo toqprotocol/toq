@@ -34,6 +34,8 @@ pub struct Config {
     pub mdns_enabled: bool,
     pub api_port: u16,
     pub adapter: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_history_limit: Option<usize>,
     #[serde(rename = "adapter.http", skip_serializing_if = "Option::is_none")]
     pub adapter_http: Option<HttpAdapterConfig>,
     #[serde(rename = "adapter.grpc", skip_serializing_if = "Option::is_none")]
@@ -86,6 +88,7 @@ impl Default for Config {
             mdns_enabled: false,
             api_port: DEFAULT_API_PORT,
             adapter: "http".into(),
+            message_history_limit: None,
             adapter_http: None,
             adapter_grpc: None,
             adapter_unix: None,

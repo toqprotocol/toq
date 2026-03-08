@@ -59,7 +59,7 @@ pub struct MultiSendResponse {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingMessage {
     pub id: String,
     #[serde(rename = "type")]
@@ -289,6 +289,20 @@ pub const ERR_INVALID_PASSPHRASE: &str = "invalid_passphrase";
 pub const STATUS_QUEUED: &str = "queued";
 pub const STATUS_DELIVERED: &str = "delivered";
 pub const STATUS_FAILED: &str = "failed";
+
+// ── History ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    pub limit: Option<usize>,
+    pub from: Option<String>,
+    pub since: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryResponse {
+    pub messages: Vec<IncomingMessage>,
+}
 
 // ── Streaming ───────────────────────────────────────────────
 
