@@ -112,6 +112,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/IncomingMessage"
 
+  /v1/messages/history:
+    get:
+      operationId: messageHistory
+      summary: Query stored message history.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: Max messages to return.
+        - name: from
+          in: query
+          schema:
+            type: string
+          description: Filter by sender address (substring match).
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Only messages after this timestamp.
+      responses:
+        "200":
+          description: Stored messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+
   # ── Streaming ─────────────────────────────────────────────
 
   /v1/stream/start:
@@ -315,6 +345,28 @@ paths:
           description: Decision applied.
         "404":
           description: Approval request not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/approvals/{id}/revoke:
+    post:
+      operationId: revokeApproval
+      summary: Revoke a previously approved agent.
+      description: Removes the agent from the allowed list without blocking. The agent would need to request approval again to reconnect.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Encoded public key of the agent to revoke.
+      responses:
+        "200":
+          description: Approval revoked.
+        "404":
+          description: Invalid public key.
           content:
             application/json:
               schema:
@@ -875,6 +927,16 @@ components:
         decision:
           type: string
           enum: [approve, deny]
+
+    HistoryResponse:
+      type: object
+      required:
+        - messages
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/IncomingMessage"
 
     # ── Discovery ───────────────────────────────────────────
 
