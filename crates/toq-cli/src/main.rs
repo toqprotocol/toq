@@ -1099,9 +1099,24 @@ async fn run_approvals() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn urlencode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
 async fn run_approve(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_running();
-    let url = format!("{}/v1/approvals/{}", api_base()?, id);
+    let url = format!("{}/v1/approvals/{}", api_base()?, urlencode_path(id));
     let client = reqwest::Client::new();
     let resp = client
         .post(&url)
@@ -1120,7 +1135,7 @@ async fn run_approve(id: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_deny(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_running();
-    let url = format!("{}/v1/approvals/{}", api_base()?, id);
+    let url = format!("{}/v1/approvals/{}", api_base()?, urlencode_path(id));
     let client = reqwest::Client::new();
     let resp = client
         .post(&url)
@@ -1518,18 +1533,23 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Check port
+    // Check port (skip if daemon is already running, since it owns the port)
     let config = Config::load(&Config::default_path())?;
-    let bind_addr = format!(
-        "{}:{}",
-        toq_core::constants::DEFAULT_BIND_ADDRESS,
-        config.port
-    );
-    match tokio::net::TcpListener::bind(&bind_addr).await {
-        Ok(_) => println!("  [ok] port {} available", config.port),
-        Err(_) => {
-            println!("  [!!] port {} in use or unavailable", config.port);
-            issues += 1;
+    let daemon_running = read_pid().is_some();
+    if daemon_running {
+        println!("  [ok] port {} in use by daemon", config.port);
+    } else {
+        let bind_addr = format!(
+            "{}:{}",
+            toq_core::constants::DEFAULT_BIND_ADDRESS,
+            config.port
+        );
+        match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(_) => println!("  [ok] port {} available", config.port),
+            Err(_) => {
+                println!("  [!!] port {} in use or unavailable", config.port);
+                issues += 1;
+            }
         }
     }
 
