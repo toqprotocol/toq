@@ -743,6 +743,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 sess.register(&info.session_id, &info.peer_public_key, &info.peer_address.to_string());
                             }
+
+                            // Record peer in store
+                            {
+                                let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+                                store.upsert(&info.peer_public_key, &info.peer_address.to_string(), keystore::PeerStatus::Approved);
+                                let _ = store.save(&keystore::peers_path());
+                            }
                             conn_count.fetch_add(1, Ordering::Relaxed);
 
                             // Connection receive loop
@@ -1231,6 +1238,29 @@ fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
 async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
     require_setup();
 
+    // If daemon is running, send through the local API (tracks counters, history, SSE)
+    if read_pid().is_some() {
+        let url = format!("{}/v1/messages?wait=true", api_base()?);
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "to": target,
+                "body": { "text": message }
+            }))
+            .send()
+            .await?;
+        let body: serde_json::Value = resp.json().await?;
+        if let Some(status) = body["status"].as_str() {
+            let id = body["id"].as_str().unwrap_or("unknown");
+            println!("Sent message {id} (status: {status})");
+        } else if let Some(err) = body["error"]["message"].as_str() {
+            eprintln!("Send failed: {err}");
+        }
+        return Ok(());
+    }
+
+    // Daemon not running: connect directly
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
     let address = Address::new(&config.host, &config.agent_name)?;

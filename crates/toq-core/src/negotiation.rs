@@ -102,6 +102,15 @@ where
                 "negotiation rejected: {reason}"
             )))
         }
+        MessageType::ApprovalRequest => {
+            let reason = response
+                .body
+                .and_then(|b| b["reason"].as_str().map(String::from))
+                .unwrap_or_else(|| "your connection request is pending review".into());
+            Err(Error::InvalidEnvelope(format!(
+                "connection pending approval: {reason}"
+            )))
+        }
         _ => Err(Error::InvalidEnvelope("unexpected message type".into())),
     }
 }
