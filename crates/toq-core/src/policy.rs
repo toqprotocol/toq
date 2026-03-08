@@ -32,12 +32,11 @@ pub struct PendingApproval {
     pub requested_at: String,
 }
 
-/// Manages connection policy: blocklist, allowlist, approvals.
+/// Manages connection policy: blocklist, allowed peers, approvals.
 pub struct PolicyEngine {
     mode: ConnectionMode,
     blocklist: HashSet<Vec<u8>>,
-    allowlist: HashSet<Vec<u8>>,
-    approved: HashSet<Vec<u8>>,
+    allowed: HashSet<Vec<u8>>,
     pending: HashMap<Vec<u8>, PendingInfo>,
 }
 
@@ -51,16 +50,14 @@ impl PolicyEngine {
         Self {
             mode,
             blocklist: HashSet::new(),
-            allowlist: HashSet::new(),
-            approved: HashSet::new(),
+            allowed: HashSet::new(),
             pending: HashMap::new(),
         }
     }
 
     /// Populate policy state from the persisted peer store.
-    /// Blocked peers go into the blocklist. Approved peers go into both
-    /// the approved set and the allowlist (so allowlist mode works).
-    /// Pending peers are restored into the pending queue.
+    /// Blocked peers go into the blocklist. Approved peers go into the
+    /// allowed set. Pending peers are restored into the pending queue.
     pub fn load_from_peer_store(&mut self, store: &PeerStore) {
         for (key_str, record) in &store.peers {
             let Ok(pk) = PublicKey::from_encoded(key_str) else {
@@ -72,8 +69,7 @@ impl PolicyEngine {
                     self.blocklist.insert(kb);
                 }
                 PeerStatus::Approved => {
-                    self.approved.insert(kb.clone());
-                    self.allowlist.insert(kb);
+                    self.allowed.insert(kb);
                 }
                 PeerStatus::Pending => {
                     self.pending.insert(
@@ -100,14 +96,14 @@ impl PolicyEngine {
         match self.mode {
             ConnectionMode::Open => PolicyDecision::Accept,
             ConnectionMode::Allowlist => {
-                if self.allowlist.contains(&key_bytes) {
+                if self.allowed.contains(&key_bytes) {
                     PolicyDecision::Accept
                 } else {
                     PolicyDecision::Reject
                 }
             }
             ConnectionMode::Approval => {
-                if self.approved.contains(&key_bytes) {
+                if self.allowed.contains(&key_bytes) {
                     PolicyDecision::Accept
                 } else if self.pending.len() >= MAX_PENDING_APPROVALS {
                     PolicyDecision::Reject
@@ -123,11 +119,9 @@ impl PolicyEngine {
     }
 
     pub fn block(&mut self, key: &PublicKey) {
-        self.blocklist.insert(key.as_bytes().to_vec());
-        // Also remove from allowlist and approved if present.
         let kb = key.as_bytes().to_vec();
-        self.allowlist.remove(&kb);
-        self.approved.remove(&kb);
+        self.blocklist.insert(kb.clone());
+        self.allowed.remove(&kb);
     }
 
     pub fn unblock(&mut self, key: &PublicKey) {
@@ -139,14 +133,18 @@ impl PolicyEngine {
     }
 
     pub fn allow(&mut self, key: &PublicKey) {
-        self.allowlist.insert(key.as_bytes().to_vec());
+        self.allowed.insert(key.as_bytes().to_vec());
     }
 
     pub fn approve(&mut self, key: &PublicKey) {
         let kb = key.as_bytes().to_vec();
         self.pending.remove(&kb);
-        self.approved.insert(kb.clone());
-        self.allowlist.insert(kb);
+        self.allowed.insert(kb);
+    }
+
+    pub fn revoke(&mut self, key: &PublicKey) {
+        let kb = key.as_bytes().to_vec();
+        self.allowed.remove(&kb);
     }
 
     pub fn deny(&mut self, key: &PublicKey) {
@@ -189,7 +187,7 @@ impl PolicyEngine {
                 store.upsert(&pk, &addr, PeerStatus::Blocked);
             }
         }
-        for kb in &self.approved {
+        for kb in &self.allowed {
             if let Some(pk) = PublicKey::from_bytes(kb) {
                 let addr = store
                     .get(&pk)

@@ -130,6 +130,8 @@ enum Commands {
     Approve { id: String },
     /// Deny a pending connection request (requires running daemon).
     Deny { id: String },
+    /// Revoke a previously approved agent (requires running daemon).
+    Revoke { id: String },
     /// Show recent received messages (requires running daemon).
     Messages {
         #[arg(long)]
@@ -193,6 +195,7 @@ async fn main() {
         Commands::Approvals => run_approvals().await,
         Commands::Approve { ref id } => run_approve(id).await,
         Commands::Deny { ref id } => run_deny(id).await,
+        Commands::Revoke { ref id } => run_revoke(id).await,
         Commands::Messages { ref from, limit } => run_messages(from.as_deref(), limit).await,
         Commands::Doctor => run_doctor().await,
         Commands::Upgrade => run_upgrade(),
@@ -1199,6 +1202,21 @@ async fn run_deny(id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
         eprintln!("Failed to deny: {msg}");
+    }
+    Ok(())
+}
+
+async fn run_revoke(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let url = format!("{}/v1/approvals/{}/revoke", api_base()?, urlencode_path(id));
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).send().await?;
+    if resp.status().is_success() {
+        println!("Revoked {id}");
+    } else {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+        eprintln!("Failed to revoke: {msg}");
     }
     Ok(())
 }

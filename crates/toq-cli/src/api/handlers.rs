@@ -886,6 +886,28 @@ pub async fn resolve_approval(
     StatusCode::OK.into_response()
 }
 
+pub async fn revoke_approval(State(state): State<ApiState>, Path(id): Path<String>) -> Response {
+    let pk = match PublicKey::from_encoded(&id) {
+        Ok(pk) => pk,
+        Err(_) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                ERR_NOT_FOUND,
+                "Invalid approval ID (must be an encoded public key)",
+            );
+        }
+    };
+
+    let mut policy = state.policy.lock().await;
+    policy.revoke(&pk);
+
+    let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+    store.peers.remove(&id);
+    let _ = store.save(&keystore::peers_path());
+
+    StatusCode::OK.into_response()
+}
+
 // ── Connections ─────────────────────────────────────────────
 
 pub async fn list_connections(State(state): State<ApiState>) -> Response {
