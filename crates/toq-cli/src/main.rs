@@ -108,10 +108,25 @@ enum Commands {
     Status,
     /// List known peers with status and last seen time.
     Peers,
-    /// Block an agent by address or public key.
-    Block { agent: String },
+    /// Block an agent by address, public key, or wildcard pattern.
+    Block {
+        /// Address or wildcard pattern (e.g. toq://host/*, toq://*/name).
+        #[arg(long)]
+        from: Option<String>,
+        /// Public key (e.g. ed25519:abc...).
+        #[arg(long)]
+        key: Option<String>,
+        /// Legacy positional argument (address or public key).
+        agent: Option<String>,
+    },
     /// Remove an agent from the blocklist.
-    Unblock { agent: String },
+    Unblock {
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        key: Option<String>,
+        agent: Option<String>,
+    },
     /// Send a test message to an agent.
     Send { address: String, message: String },
     /// Start a dummy agent that prints incoming messages.
@@ -126,12 +141,28 @@ enum Commands {
     ClearLogs,
     /// List pending approval requests (requires running daemon).
     Approvals,
-    /// Approve a pending connection request (requires running daemon).
-    Approve { id: String },
+    /// Approve a pending request, or pre-approve by key/address/wildcard.
+    Approve {
+        /// Pending request ID (public key of the requesting agent).
+        id: Option<String>,
+        /// Address or wildcard pattern.
+        #[arg(long)]
+        from: Option<String>,
+        /// Public key.
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Deny a pending connection request (requires running daemon).
     Deny { id: String },
-    /// Revoke a previously approved agent (requires running daemon).
-    Revoke { id: String },
+    /// Revoke a previously approved agent or rule.
+    Revoke {
+        /// Pending request ID (public key).
+        id: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Show recent received messages (requires running daemon).
     Messages {
         #[arg(long)]
@@ -141,6 +172,10 @@ enum Commands {
     },
     /// Run diagnostics: port, DNS, keys, agent responsiveness.
     Doctor,
+    /// List all permission rules (approved and blocked).
+    Permissions,
+    /// Ping a remote agent to discover its public key.
+    Ping { address: String },
     /// Update the toq binary.
     Upgrade,
     /// Show recent log entries.
@@ -181,8 +216,16 @@ async fn main() {
         Commands::Down { graceful } => run_down(graceful),
         Commands::Status => run_status(),
         Commands::Peers => run_peers(),
-        Commands::Block { ref agent } => run_block(agent).await,
-        Commands::Unblock { ref agent } => run_unblock(agent).await,
+        Commands::Block {
+            ref from,
+            ref key,
+            ref agent,
+        } => run_block(from.as_deref(), key.as_deref(), agent.as_deref()).await,
+        Commands::Unblock {
+            ref from,
+            ref key,
+            ref agent,
+        } => run_unblock(from.as_deref(), key.as_deref(), agent.as_deref()).await,
         Commands::Send {
             ref address,
             ref message,
@@ -193,11 +236,21 @@ async fn main() {
         Commands::RotateKeys => run_rotate_keys(),
         Commands::ClearLogs => run_clear_logs(),
         Commands::Approvals => run_approvals().await,
-        Commands::Approve { ref id } => run_approve(id).await,
+        Commands::Approve {
+            ref id,
+            ref from,
+            ref key,
+        } => run_approve(id.as_deref(), from.as_deref(), key.as_deref()).await,
         Commands::Deny { ref id } => run_deny(id).await,
-        Commands::Revoke { ref id } => run_revoke(id).await,
+        Commands::Revoke {
+            ref id,
+            ref from,
+            ref key,
+        } => run_revoke(id.as_deref(), from.as_deref(), key.as_deref()).await,
         Commands::Messages { ref from, limit } => run_messages(from.as_deref(), limit).await,
         Commands::Doctor => run_doctor().await,
+        Commands::Permissions => run_permissions().await,
+        Commands::Ping { ref address } => run_ping(address).await,
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
     };
@@ -1014,74 +1067,116 @@ fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_block(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-    // Resolve to public key
-    let public_key = match toq_core::crypto::PublicKey::from_encoded(agent) {
-        Ok(key) => key,
-        Err(_) => {
-            let found = store.peers.iter().find(|(_, r)| r.address == agent);
-            match found {
-                Some((key_str, _)) => toq_core::crypto::PublicKey::from_encoded(key_str)?,
-                None => return Err(format!("unknown agent: {agent}").into()),
-            }
+/// Resolve --from, --key, or legacy positional arg into a PermissionRule.
+fn resolve_rule(
+    from: Option<&str>,
+    key: Option<&str>,
+    agent: Option<&str>,
+) -> Result<toq_core::policy::PermissionRule, Box<dyn std::error::Error>> {
+    use toq_core::policy::PermissionRule;
+    if let Some(addr) = from {
+        return Ok(PermissionRule::Address(addr.to_string()));
+    }
+    if let Some(k) = key {
+        let pk = toq_core::crypto::PublicKey::from_encoded(k)?;
+        return Ok(PermissionRule::Key(pk.as_bytes().to_vec()));
+    }
+    if let Some(a) = agent {
+        // Legacy: try as public key first, then treat as address
+        if let Ok(pk) = toq_core::crypto::PublicKey::from_encoded(a) {
+            return Ok(PermissionRule::Key(pk.as_bytes().to_vec()));
         }
-    };
-    let encoded = public_key.to_encoded();
+        // Look up in peer store by address
+        let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+        if let Some((key_str, _)) = store.peers.iter().find(|(_, r)| r.address == a) {
+            let pk = toq_core::crypto::PublicKey::from_encoded(key_str)?;
+            return Ok(PermissionRule::Key(pk.as_bytes().to_vec()));
+        }
+        // Treat as address pattern
+        return Ok(PermissionRule::Address(a.to_string()));
+    }
+    Err("Specify --from, --key, or a positional argument".into())
+}
 
-    // If daemon is running, use API (updates both PolicyEngine and PeerStore)
+async fn run_block(
+    from: Option<&str>,
+    key: Option<&str>,
+    agent: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rule = resolve_rule(from, key, agent)?;
+    let label = from.or(key).or(agent).unwrap_or("unknown");
+
+    // If daemon is running, use API
     if read_pid().is_some()
         && let Ok(base) = api_base()
     {
-        let url = format!("{}/v1/peers/{}/block", base, encoded);
-        if let Ok(resp) = reqwest::Client::new().post(&url).send().await
+        let body = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => {
+                let pk = toq_core::crypto::PublicKey::from_bytes(kb).ok_or("invalid key")?;
+                serde_json::json!({"key": pk.to_encoded()})
+            }
+            toq_core::policy::PermissionRule::Address(addr) => {
+                serde_json::json!({"from": addr})
+            }
+        };
+        let url = format!("{}/v1/block", base);
+        if let Ok(resp) = reqwest::Client::new().post(&url).json(&body).send().await
             && resp.status().is_success()
         {
-            println!("Blocked {agent}");
+            println!("Blocked {label}");
             return Ok(());
         }
     }
 
-    // Fallback: modify PeerStore directly (daemon not running)
-    let mut store = store;
-    store.upsert(&public_key, "", toq_core::keystore::PeerStatus::Blocked);
-    store.save(&keystore::peers_path())?;
-    println!("Blocked {agent}");
+    // Fallback: modify PeerStore directly (key rules only)
+    if let toq_core::policy::PermissionRule::Key(kb) = &rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+        store.upsert(&pk, "", toq_core::keystore::PeerStatus::Blocked);
+        store.save(&keystore::peers_path())?;
+    }
+    println!("Blocked {label}");
     Ok(())
 }
 
-async fn run_unblock(agent: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-    let key = match toq_core::crypto::PublicKey::from_encoded(agent) {
-        Ok(k) => k,
-        Err(_) => {
-            let found = store.peers.iter().find(|(_, r)| r.address == agent);
-            match found {
-                Some((key_str, _)) => toq_core::crypto::PublicKey::from_encoded(key_str)?,
-                None => return Err(format!("unknown agent: {agent}").into()),
-            }
-        }
-    };
-    let encoded = key.to_encoded();
+async fn run_unblock(
+    from: Option<&str>,
+    key: Option<&str>,
+    agent: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rule = resolve_rule(from, key, agent)?;
+    let label = from.or(key).or(agent).unwrap_or("unknown");
 
-    // If daemon is running, use API (updates both PolicyEngine and PeerStore)
     if read_pid().is_some()
         && let Ok(base) = api_base()
     {
-        let url = format!("{}/v1/peers/{}/block", base, encoded);
-        if let Ok(resp) = reqwest::Client::new().delete(&url).send().await
+        let body = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => {
+                let pk = toq_core::crypto::PublicKey::from_bytes(kb).ok_or("invalid key")?;
+                serde_json::json!({"key": pk.to_encoded()})
+            }
+            toq_core::policy::PermissionRule::Address(addr) => {
+                serde_json::json!({"from": addr})
+            }
+        };
+        let url = format!("{}/v1/block", base);
+        if let Ok(resp) = reqwest::Client::new().delete(&url).json(&body).send().await
             && resp.status().is_success()
         {
-            println!("Unblocked {agent}");
+            println!("Unblocked {label}");
             return Ok(());
         }
     }
 
-    // Fallback: modify PeerStore directly (daemon not running)
-    let mut store = store;
-    store.peers.remove(&encoded);
-    store.save(&keystore::peers_path())?;
-    println!("Unblocked {agent}");
+    if let toq_core::policy::PermissionRule::Key(kb) = &rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
+        store.peers.remove(&pk.to_encoded());
+        store.save(&keystore::peers_path())?;
+    }
+    println!("Unblocked {label}");
     Ok(())
 }
 
@@ -1173,11 +1268,43 @@ fn urlencode_path(s: &str) -> String {
     out
 }
 
-async fn run_approve(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_approve(
+    id: Option<&str>,
+    from: Option<&str>,
+    key: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     require_running();
-    let url = format!("{}/v1/approvals/{}", api_base()?, urlencode_path(id));
-    let client = reqwest::Client::new();
-    let resp = client
+    let base = api_base()?;
+
+    // If --from or --key, add a permission rule
+    if from.is_some() || key.is_some() {
+        let rule = resolve_rule(from, key, None)?;
+        let label = from.or(key).unwrap_or("unknown");
+        let body = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => {
+                let pk = toq_core::crypto::PublicKey::from_bytes(kb).ok_or("invalid key")?;
+                serde_json::json!({"key": pk.to_encoded()})
+            }
+            toq_core::policy::PermissionRule::Address(addr) => {
+                serde_json::json!({"from": addr})
+            }
+        };
+        let url = format!("{}/v1/approvals", base);
+        let resp = reqwest::Client::new().post(&url).json(&body).send().await?;
+        if resp.status().is_success() {
+            println!("Approved {label}");
+        } else {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+            eprintln!("Failed to approve: {msg}");
+        }
+        return Ok(());
+    }
+
+    // Legacy: approve a pending request by ID
+    let id = id.ok_or("Specify --from, --key, or a pending request ID")?;
+    let url = format!("{}/v1/approvals/{}", base, urlencode_path(id));
+    let resp = reqwest::Client::new()
         .post(&url)
         .json(&serde_json::json!({"decision": "approve"}))
         .send()
@@ -1211,11 +1338,41 @@ async fn run_deny(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_revoke(id: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_revoke(
+    id: Option<&str>,
+    from: Option<&str>,
+    key: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     require_running();
-    let url = format!("{}/v1/approvals/{}/revoke", api_base()?, urlencode_path(id));
-    let client = reqwest::Client::new();
-    let resp = client.post(&url).send().await?;
+    let base = api_base()?;
+
+    if from.is_some() || key.is_some() {
+        let rule = resolve_rule(from, key, None)?;
+        let label = from.or(key).unwrap_or("unknown");
+        let body = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => {
+                let pk = toq_core::crypto::PublicKey::from_bytes(kb).ok_or("invalid key")?;
+                serde_json::json!({"key": pk.to_encoded()})
+            }
+            toq_core::policy::PermissionRule::Address(addr) => {
+                serde_json::json!({"from": addr})
+            }
+        };
+        let url = format!("{}/v1/revoke", base);
+        let resp = reqwest::Client::new().post(&url).json(&body).send().await?;
+        if resp.status().is_success() {
+            println!("Revoked {label}");
+        } else {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+            eprintln!("Failed to revoke: {msg}");
+        }
+        return Ok(());
+    }
+
+    let id = id.ok_or("Specify --from, --key, or a public key ID")?;
+    let url = format!("{}/v1/approvals/{}/revoke", base, urlencode_path(id));
+    let resp = reqwest::Client::new().post(&url).send().await?;
     if resp.status().is_success() {
         println!("Revoked {id}");
     } else {
@@ -1226,6 +1383,75 @@ async fn run_revoke(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn run_permissions() -> Result<(), Box<dyn std::error::Error>> {
+    require_running();
+    let url = format!("{}/v1/permissions", api_base()?);
+    let resp = reqwest::Client::new().get(&url).send().await?;
+    let body: serde_json::Value = resp.json().await?;
+
+    let approved = body["approved"].as_array();
+    let blocked = body["blocked"].as_array();
+
+    println!("Approved:");
+    if let Some(rules) = approved {
+        if rules.is_empty() {
+            println!("  (none)");
+        }
+        for r in rules {
+            let t = r["type"].as_str().unwrap_or("?");
+            let v = r["value"].as_str().unwrap_or("?");
+            println!("  {t}: {v}");
+        }
+    }
+
+    println!("Blocked:");
+    if let Some(rules) = blocked {
+        if rules.is_empty() {
+            println!("  (none)");
+        }
+        for r in rules {
+            let t = r["type"].as_str().unwrap_or("?");
+            let v = r["value"].as_str().unwrap_or("?");
+            println!("  {t}: {v}");
+        }
+    }
+    Ok(())
+}
+
+async fn run_ping(address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+    require_running();
+
+    let url = format!("{}/v1/ping", api_base()?);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({"address": address}))
+        .send()
+        .await?;
+
+    if resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await?;
+        let agent = body["agent_name"].as_str().unwrap_or("unknown");
+        let key = body["public_key"].as_str().unwrap_or("unknown");
+        let reachable = body["reachable"].as_bool().unwrap_or(false);
+        println!("Agent:      {agent}");
+        println!("Address:    {address}");
+        println!("Public key: {key}");
+        println!(
+            "Status:     {}",
+            if reachable {
+                "reachable"
+            } else {
+                "unreachable"
+            }
+        );
+    } else {
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let msg = body["error"]["message"].as_str().unwrap_or("ping failed");
+        eprintln!("{msg}");
+    }
+    Ok(())
+}
 fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lp = log_path();
     if !lp.exists() {
@@ -1722,4 +1948,52 @@ fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_rule_from_flag() {
+        let rule = resolve_rule(Some("toq://host/*"), None, None).unwrap();
+        assert_eq!(
+            rule,
+            toq_core::policy::PermissionRule::Address("toq://host/*".into())
+        );
+    }
+
+    #[test]
+    fn resolve_rule_from_flag_takes_priority() {
+        let rule = resolve_rule(Some("toq://*"), Some("not-a-key"), Some("ignored")).unwrap();
+        assert_eq!(
+            rule,
+            toq_core::policy::PermissionRule::Address("toq://*".into())
+        );
+    }
+
+    #[test]
+    fn resolve_rule_key_flag() {
+        let kp = toq_core::crypto::Keypair::generate();
+        let encoded = kp.public_key().to_encoded();
+        let rule = resolve_rule(None, Some(&encoded), None).unwrap();
+        assert_eq!(
+            rule,
+            toq_core::policy::PermissionRule::Key(kp.public_key().as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn resolve_rule_positional_as_address() {
+        let rule = resolve_rule(None, None, Some("toq://1.2.3.4/bob")).unwrap();
+        assert_eq!(
+            rule,
+            toq_core::policy::PermissionRule::Address("toq://1.2.3.4/bob".into())
+        );
+    }
+
+    #[test]
+    fn resolve_rule_no_args_errors() {
+        assert!(resolve_rule(None, None, None).is_err());
+    }
 }
