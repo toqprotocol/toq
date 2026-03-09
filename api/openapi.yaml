@@ -372,6 +372,128 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  # ── Rule-based permissions ─────────────────────────────────
+
+  /v1/block:
+    post:
+      operationId: blockRule
+      summary: Add a block rule by key or address pattern.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleBody"
+      responses:
+        "200":
+          description: Block rule added.
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: unblockRule
+      summary: Remove a block rule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleBody"
+      responses:
+        "200":
+          description: Block rule removed.
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/approve:
+    post:
+      operationId: approveRule
+      summary: Add an approve rule by key or address pattern.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleBody"
+      responses:
+        "200":
+          description: Approve rule added.
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/revoke:
+    post:
+      operationId: revokeRule
+      summary: Remove an approve rule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleBody"
+      responses:
+        "200":
+          description: Approve rule removed.
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/permissions:
+    get:
+      operationId: listPermissions
+      summary: List all approved and blocked permission rules.
+      responses:
+        "200":
+          description: Permission rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionsResponse"
+
+  /v1/ping:
+    post:
+      operationId: pingAgent
+      summary: Ping a remote agent to discover its public key.
+      description: Connects to the remote agent, completes the handshake to learn its public key, then disconnects. Creates a pending approval on the remote if it is in approval mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                  description: toq address to ping (e.g. toq://host/name).
+      responses:
+        "200":
+          description: Ping result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PingResponse"
+        "400":
+          description: Invalid address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ── Discovery ─────────────────────────────────────────────
 
   /v1/discover:
@@ -927,6 +1049,56 @@ components:
         decision:
           type: string
           enum: [approve, deny]
+
+    RuleBody:
+      type: object
+      description: Specify either key or from (not both).
+      properties:
+        key:
+          type: string
+          description: Ed25519 public key.
+        from:
+          type: string
+          description: toq address or wildcard pattern (e.g. toq://host/*, toq://*/name, toq://*).
+
+    PermissionRule:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [key, address]
+        value:
+          type: string
+
+    PermissionsResponse:
+      type: object
+      required: [approved, blocked]
+      properties:
+        approved:
+          type: array
+          items:
+            $ref: "#/components/schemas/PermissionRule"
+        blocked:
+          type: array
+          items:
+            $ref: "#/components/schemas/PermissionRule"
+
+    PingResponse:
+      type: object
+      required: [agent_name, address, reachable]
+      properties:
+        agent_name:
+          type: string
+        address:
+          type: string
+        public_key:
+          type: string
+          nullable: true
+        reachable:
+          type: boolean
+        error:
+          type: string
 
     HistoryResponse:
       type: object
