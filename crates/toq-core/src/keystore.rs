@@ -116,17 +116,8 @@ pub struct PeerStore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRecord {
     pub address: String,
-    pub status: PeerStatus,
     pub first_seen: String,
     pub last_seen: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PeerStatus {
-    Approved,
-    Blocked,
-    Pending,
 }
 
 impl PeerStore {
@@ -150,21 +141,19 @@ impl PeerStore {
     }
 
     /// Record or update a peer.
-    pub fn upsert(&mut self, public_key: &PublicKey, address: &str, status: PeerStatus) {
+    pub fn upsert(&mut self, public_key: &PublicKey, address: &str) {
         let key_str = public_key.to_encoded();
         let now = crate::now_utc();
         self.peers
             .entry(key_str)
             .and_modify(|r| {
-                r.address = address.to_string();
-                r.last_seen = now.clone();
-                if status != PeerStatus::Pending {
-                    r.status = status.clone();
+                if !address.is_empty() {
+                    r.address = address.to_string();
                 }
+                r.last_seen = now.clone();
             })
             .or_insert(PeerRecord {
                 address: address.to_string(),
-                status,
                 first_seen: now.clone(),
                 last_seen: now,
             });

@@ -680,9 +680,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         toq_core::config::PermissionsFile::load(&toq_core::config::PermissionsFile::path())
             .unwrap_or_default();
     engine.load_from_permissions(&perms_file);
-    let peer_store =
-        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    engine.load_from_peer_store(&peer_store);
     let policy = std::sync::Arc::new(tokio::sync::Mutex::new(engine));
 
     // Wire RateLimiter
@@ -846,7 +843,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                             // Record peer in store
                             {
                                 let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-                                store.upsert(&info.peer_public_key, &info.peer_address.to_string(), keystore::PeerStatus::Approved);
+                                store.upsert(&info.peer_public_key, &info.peer_address.to_string());
                                 let _ = store.save(&keystore::peers_path());
                             }
                             conn_count.fetch_add(1, Ordering::Relaxed);
@@ -1660,9 +1657,6 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
         toq_core::config::PermissionsFile::load(&toq_core::config::PermissionsFile::path())
             .unwrap_or_default();
     engine.load_from_permissions(&perms_file);
-    let peer_store =
-        toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    engine.load_from_peer_store(&peer_store);
     let policy = std::sync::Arc::new(tokio::sync::Mutex::new(engine));
 
     let bind_addr = format!(

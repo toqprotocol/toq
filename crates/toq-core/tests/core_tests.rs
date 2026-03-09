@@ -1722,17 +1722,6 @@ fn session_remove() {
 // --- PolicyEngine persistence ---
 
 #[test]
-fn policy_load_empty_peer_store() {
-    use toq_core::keystore::PeerStore;
-    use toq_core::policy::*;
-
-    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    let store = PeerStore::default();
-    engine.load_from_peer_store(&store);
-    assert_eq!(engine.pending_count(), 0);
-}
-
-#[test]
 fn policy_load_blocked_peer() {
     use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
@@ -1799,24 +1788,6 @@ fn policy_load_approved_into_allowlist() {
         engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::Accept
     );
-}
-
-#[test]
-fn policy_load_pending_peer() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
-    use toq_core::policy::*;
-
-    let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Pending);
-
-    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store);
-    assert_eq!(engine.pending_count(), 1);
-
-    let pending = engine.list_pending();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].address, "toq://test/peer");
 }
 
 #[test]
@@ -1923,19 +1894,16 @@ fn policy_sync_approved_preserves_address() {
 
 #[test]
 fn policy_sync_pending_uses_info_address() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.add_pending(&kp.public_key(), "toq://remote/agent");
 
-    let mut store = PeerStore::default();
-    engine.sync_to_peer_store(&mut store);
-
-    let record = store.get(&kp.public_key()).unwrap();
-    assert_eq!(record.status, PeerStatus::Pending);
-    assert_eq!(record.address, "toq://remote/agent");
+    let perms = engine.sync_to_permissions();
+    assert_eq!(perms.pending.len(), 1);
+    assert_eq!(perms.pending[0].key, kp.public_key().to_encoded());
+    assert_eq!(perms.pending[0].address, "toq://remote/agent");
 }
 
 #[test]
@@ -2042,42 +2010,27 @@ fn peer_store_default_empty() {
 
 #[test]
 fn peer_store_upsert_and_get() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::keystore::PeerStore;
 
     let kp = Keypair::generate();
     let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    store.upsert(&kp.public_key(), "toq://test/peer");
 
     let record = store.get(&kp.public_key()).unwrap();
     assert_eq!(record.address, "toq://test/peer");
-    assert_eq!(record.status, PeerStatus::Approved);
 }
 
 #[test]
 fn peer_store_upsert_updates_existing() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::keystore::PeerStore;
 
     let kp = Keypair::generate();
     let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://old/addr", PeerStatus::Pending);
-    store.upsert(&kp.public_key(), "toq://new/addr", PeerStatus::Approved);
+    store.upsert(&kp.public_key(), "toq://old/addr");
+    store.upsert(&kp.public_key(), "toq://new/addr");
 
     let record = store.get(&kp.public_key()).unwrap();
     assert_eq!(record.address, "toq://new/addr");
-    assert_eq!(record.status, PeerStatus::Approved);
-}
-
-#[test]
-fn peer_store_upsert_pending_does_not_overwrite_status() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
-
-    let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Pending);
-
-    let record = store.get(&kp.public_key()).unwrap();
-    assert_eq!(record.status, PeerStatus::Approved);
 }
 
 #[test]
@@ -2091,11 +2044,11 @@ fn peer_store_get_missing() {
 
 #[test]
 fn peer_store_save_load_roundtrip() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::keystore::PeerStore;
 
     let kp = Keypair::generate();
     let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    store.upsert(&kp.public_key(), "toq://test/peer");
 
     let dir = std::env::temp_dir().join(format!("toq-test-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
@@ -2106,7 +2059,6 @@ fn peer_store_save_load_roundtrip() {
 
     let record = loaded.get(&kp.public_key()).unwrap();
     assert_eq!(record.address, "toq://test/peer");
-    assert_eq!(record.status, PeerStatus::Approved);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2124,23 +2076,21 @@ fn peer_store_load_nonexistent() {
 
 #[test]
 fn policy_load_invalid_key_skipped() {
-    use toq_core::keystore::{PeerRecord, PeerStatus, PeerStore};
+    use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
-    let mut store = PeerStore::default();
-    store.peers.insert(
-        "not-a-valid-key".to_string(),
-        PeerRecord {
-            address: "toq://test/peer".to_string(),
-            status: PeerStatus::Approved,
-            first_seen: "2026-01-01T00:00:00Z".to_string(),
-            last_seen: "2026-01-01T00:00:00Z".to_string(),
-        },
-    );
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: "not-a-valid-key".into(),
+        }],
+        blocked: vec![],
+        pending: vec![],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store); // should not panic
-    assert_eq!(engine.pending_count(), 0);
+    engine.load_from_permissions(&perms); // should not panic
+    assert!(engine.list_approved().is_empty()); // invalid key skipped
 }
 
 #[test]
@@ -2346,13 +2296,13 @@ fn delivery_tracker_multiple_pending() {
 
 #[test]
 fn peer_store_save_load_multiple_peers() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::keystore::PeerStore;
 
     let kp1 = Keypair::generate();
     let kp2 = Keypair::generate();
     let mut store = PeerStore::default();
-    store.upsert(&kp1.public_key(), "toq://a/one", PeerStatus::Approved);
-    store.upsert(&kp2.public_key(), "toq://b/two", PeerStatus::Blocked);
+    store.upsert(&kp1.public_key(), "toq://a/one");
+    store.upsert(&kp2.public_key(), "toq://b/two");
 
     let dir = std::env::temp_dir().join(format!("toq-test-multi-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
@@ -2363,12 +2313,12 @@ fn peer_store_save_load_multiple_peers() {
 
     assert_eq!(loaded.peers.len(), 2);
     assert_eq!(
-        loaded.get(&kp1.public_key()).unwrap().status,
-        PeerStatus::Approved
+        loaded.get(&kp1.public_key()).unwrap().address,
+        "toq://a/one"
     );
     assert_eq!(
-        loaded.get(&kp2.public_key()).unwrap().status,
-        PeerStatus::Blocked
+        loaded.get(&kp2.public_key()).unwrap().address,
+        "toq://b/two"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -2376,11 +2326,11 @@ fn peer_store_save_load_multiple_peers() {
 
 #[test]
 fn peer_store_remove_peer() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::keystore::PeerStore;
 
     let kp = Keypair::generate();
     let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    store.upsert(&kp.public_key(), "toq://test/peer");
     assert!(store.get(&kp.public_key()).is_some());
 
     let key_str = kp.public_key().to_encoded();

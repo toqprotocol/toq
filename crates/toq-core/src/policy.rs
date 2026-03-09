@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::config::PermissionsFile;
 use crate::constants::MAX_PENDING_APPROVALS;
 use crate::crypto::PublicKey;
-use crate::keystore::{PeerStatus, PeerStore};
+use crate::keystore::PeerStore;
 
 /// Connection mode.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -102,27 +102,6 @@ impl PolicyEngine {
             blocked: Vec::new(),
             approved: Vec::new(),
             pending: HashMap::new(),
-        }
-    }
-
-    /// Populate policy state from the persisted peer store.
-    /// Only pending peers are restored from PeerStore (legacy compat).
-    /// Approved/blocked rules are loaded from permissions.toml.
-    pub fn load_from_peer_store(&mut self, store: &PeerStore) {
-        for (key_str, record) in &store.peers {
-            if record.status != PeerStatus::Pending {
-                continue;
-            }
-            let Ok(pk) = PublicKey::from_encoded(key_str) else {
-                continue;
-            };
-            self.pending.insert(
-                pk.as_bytes().to_vec(),
-                PendingInfo {
-                    address: record.address.clone(),
-                    requested_at: record.first_seen.clone(),
-                },
-            );
         }
     }
 
@@ -293,12 +272,11 @@ impl PolicyEngine {
         &self.blocked
     }
 
-    /// Write pending state back to peer store. Approved/blocked rules
-    /// are persisted via sync_to_permissions instead.
+    /// Record pending peer metadata in the peer store (contact book).
     pub fn sync_to_peer_store(&self, store: &mut PeerStore) {
         for (kb, info) in &self.pending {
             if let Some(pk) = PublicKey::from_bytes(kb) {
-                store.upsert(&pk, &info.address, PeerStatus::Pending);
+                store.upsert(&pk, &info.address);
             }
         }
     }
