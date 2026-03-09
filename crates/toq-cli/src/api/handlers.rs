@@ -752,16 +752,11 @@ pub async fn block_peer(State(state): State<ApiState>, Path(public_key): Path<St
             );
         }
     };
-    let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    store.upsert(&pk, "", keystore::PeerStatus::Blocked);
-    let _ = store.save(&keystore::peers_path());
-    state
-        .policy
-        .lock()
-        .await
-        .block(toq_core::policy::PermissionRule::Key(
-            pk.as_bytes().to_vec(),
-        ));
+    let mut policy = state.policy.lock().await;
+    policy.block(toq_core::policy::PermissionRule::Key(
+        pk.as_bytes().to_vec(),
+    ));
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -779,16 +774,11 @@ pub async fn unblock_peer(
             );
         }
     };
-    let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    store.peers.remove(&public_key);
-    let _ = store.save(&keystore::peers_path());
-    state
-        .policy
-        .lock()
-        .await
-        .unblock(&toq_core::policy::PermissionRule::Key(
-            pk.as_bytes().to_vec(),
-        ));
+    let mut policy = state.policy.lock().await;
+    policy.unblock(&toq_core::policy::PermissionRule::Key(
+        pk.as_bytes().to_vec(),
+    ));
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -826,20 +816,19 @@ fn parse_rule(
     ))
 }
 
+fn save_permissions(policy: &toq_core::policy::PolicyEngine) {
+    let perms = policy.sync_to_permissions();
+    let _ = perms.save(&toq_core::config::PermissionsFile::path());
+}
+
 pub async fn block_rule(State(state): State<ApiState>, Json(body): Json<RuleBody>) -> Response {
     let rule = match parse_rule(&body) {
         Ok(r) => r,
         Err((status, code, msg)) => return error_response(status, code, msg),
     };
-    // Persist key-based rules to PeerStore
-    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
-    {
-        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-        store.upsert(&pk, "", keystore::PeerStatus::Blocked);
-        let _ = store.save(&keystore::peers_path());
-    }
-    state.policy.lock().await.block(rule);
+    let mut policy = state.policy.lock().await;
+    policy.block(rule);
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -848,14 +837,9 @@ pub async fn unblock_rule(State(state): State<ApiState>, Json(body): Json<RuleBo
         Ok(r) => r,
         Err((status, code, msg)) => return error_response(status, code, msg),
     };
-    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
-    {
-        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-        store.peers.remove(&pk.to_encoded());
-        let _ = store.save(&keystore::peers_path());
-    }
-    state.policy.lock().await.unblock(&rule);
+    let mut policy = state.policy.lock().await;
+    policy.unblock(&rule);
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -864,14 +848,9 @@ pub async fn approve_rule(State(state): State<ApiState>, Json(body): Json<RuleBo
         Ok(r) => r,
         Err((status, code, msg)) => return error_response(status, code, msg),
     };
-    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
-    {
-        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-        store.upsert(&pk, "", keystore::PeerStatus::Approved);
-        let _ = store.save(&keystore::peers_path());
-    }
-    state.policy.lock().await.approve(rule);
+    let mut policy = state.policy.lock().await;
+    policy.approve(rule);
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -880,14 +859,9 @@ pub async fn revoke_rule(State(state): State<ApiState>, Json(body): Json<RuleBod
         Ok(r) => r,
         Err((status, code, msg)) => return error_response(status, code, msg),
     };
-    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
-    {
-        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-        store.peers.remove(&pk.to_encoded());
-        let _ = store.save(&keystore::peers_path());
-    }
-    state.policy.lock().await.revoke(&rule);
+    let mut policy = state.policy.lock().await;
+    policy.revoke(&rule);
+    save_permissions(&policy);
     StatusCode::OK.into_response()
 }
 
@@ -1045,32 +1019,12 @@ pub async fn resolve_approval(
     let mut policy = state.policy.lock().await;
     match decision.decision.as_str() {
         "approve" => {
-            let address = policy
-                .list_pending()
-                .iter()
-                .find(|p| {
-                    PublicKey::from_bytes(&p.public_key)
-                        .map(|k| k.to_encoded() == id)
-                        .unwrap_or(false)
-                })
-                .map(|p| p.address.clone())
-                .unwrap_or_default();
             policy.approve_pending(&pk);
-            let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-            store.upsert(&pk, &address, keystore::PeerStatus::Approved);
-            let _ = store.save(&keystore::peers_path());
+            save_permissions(&policy);
         }
         "deny" => {
             policy.deny(&pk);
-            let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-            let is_pending = store
-                .get(&pk)
-                .map(|r| r.status == keystore::PeerStatus::Pending)
-                .unwrap_or(false);
-            if is_pending {
-                store.peers.remove(&id);
-                let _ = store.save(&keystore::peers_path());
-            }
+            save_permissions(&policy);
         }
         _ => {
             return error_response(
@@ -1099,10 +1053,7 @@ pub async fn revoke_approval(State(state): State<ApiState>, Path(id): Path<Strin
     policy.revoke(&toq_core::policy::PermissionRule::Key(
         pk.as_bytes().to_vec(),
     ));
-
-    let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
-    store.peers.remove(&id);
-    let _ = store.save(&keystore::peers_path());
+    save_permissions(&policy);
 
     StatusCode::OK.into_response()
 }

@@ -151,3 +151,59 @@ pub fn dirs_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(TOQ_DIR_NAME)
 }
+
+/// Permission rule as stored in `permissions.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionEntry {
+    #[serde(rename = "type")]
+    pub rule_type: String,
+    pub value: String,
+}
+
+/// Permissions file at `~/.toq/permissions.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PermissionsFile {
+    #[serde(default)]
+    pub approved: Vec<PermissionEntry>,
+    #[serde(default)]
+    pub blocked: Vec<PermissionEntry>,
+    #[serde(default)]
+    pub pending: Vec<PendingEntry>,
+}
+
+/// A pending approval request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingEntry {
+    pub key: String,
+    pub address: String,
+    pub requested_at: String,
+}
+
+impl PermissionsFile {
+    pub fn path() -> PathBuf {
+        dirs_path().join("permissions.toml")
+    }
+
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(path).map_err(|e| Error::Io(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| Error::Io(e.to_string()))
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
+        }
+        let toml_str = toml::to_string_pretty(self).map_err(|e| Error::Io(e.to_string()))?;
+        let annotated = format!(
+            "# toq permission rules\n\
+             # Edit while the daemon is stopped, or use CLI commands while running.\n\
+             # Types: \"key\" (public key) or \"address\" (toq address or wildcard)\n\
+             # Wildcards: toq://*, toq://host/*, toq://*/name\n\n\
+             {toml_str}"
+        );
+        std::fs::write(path, annotated).map_err(|e| Error::Io(e.to_string()))
+    }
+}

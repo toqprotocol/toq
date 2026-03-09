@@ -1734,15 +1734,21 @@ fn policy_load_empty_peer_store() {
 
 #[test]
 fn policy_load_blocked_peer() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Blocked);
+    let perms = PermissionsFile {
+        approved: vec![],
+        blocked: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: kp.public_key().to_encoded(),
+        }],
+        pending: vec![],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
     assert_eq!(
         engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::Reject
@@ -1751,15 +1757,21 @@ fn policy_load_blocked_peer() {
 
 #[test]
 fn policy_load_approved_peer() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: kp.public_key().to_encoded(),
+        }],
+        blocked: vec![],
+        pending: vec![],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
     assert_eq!(
         engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::Accept
@@ -1768,15 +1780,21 @@ fn policy_load_approved_peer() {
 
 #[test]
 fn policy_load_approved_into_allowlist() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: kp.public_key().to_encoded(),
+        }],
+        blocked: vec![],
+        pending: vec![],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
     assert_eq!(
         engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::Accept
@@ -1803,32 +1821,31 @@ fn policy_load_pending_peer() {
 
 #[test]
 fn policy_load_mixed_statuses() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PendingEntry, PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let blocked = Keypair::generate();
     let approved = Keypair::generate();
     let pending = Keypair::generate();
 
-    let mut store = PeerStore::default();
-    store.upsert(
-        &blocked.public_key(),
-        "toq://a/blocked",
-        PeerStatus::Blocked,
-    );
-    store.upsert(
-        &approved.public_key(),
-        "toq://b/approved",
-        PeerStatus::Approved,
-    );
-    store.upsert(
-        &pending.public_key(),
-        "toq://c/pending",
-        PeerStatus::Pending,
-    );
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: approved.public_key().to_encoded(),
+        }],
+        blocked: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: blocked.public_key().to_encoded(),
+        }],
+        pending: vec![PendingEntry {
+            key: pending.public_key().to_encoded(),
+            address: "toq://c/pending".into(),
+            requested_at: "2026-01-01T00:00:00Z".into(),
+        }],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
 
     assert_eq!(
         engine.check(&blocked.public_key(), "toq://test/peer"),
@@ -1843,16 +1860,22 @@ fn policy_load_mixed_statuses() {
 
 #[test]
 fn policy_load_idempotent() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://test/peer", PeerStatus::Approved);
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: kp.public_key().to_encoded(),
+        }],
+        blocked: vec![],
+        pending: vec![],
+    };
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
+    engine.load_from_permissions(&perms);
     assert_eq!(
         engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::Accept
@@ -1872,44 +1895,30 @@ fn policy_sync_empty_engine() {
 
 #[test]
 fn policy_sync_blocked_preserves_address() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(
-        &kp.public_key(),
-        "toq://original/addr",
-        PeerStatus::Approved,
-    );
-
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
-    engine.block(toq_core::policy::PermissionRule::Key(
-        kp.public_key().as_bytes().to_vec(),
-    ));
-    engine.sync_to_peer_store(&mut store);
+    engine.block(PermissionRule::Key(kp.public_key().as_bytes().to_vec()));
 
-    let record = store.get(&kp.public_key()).unwrap();
-    assert_eq!(record.status, PeerStatus::Blocked);
-    assert_eq!(record.address, "toq://original/addr");
+    let perms = engine.sync_to_permissions();
+    assert_eq!(perms.blocked.len(), 1);
+    assert_eq!(perms.blocked[0].rule_type, "key");
+    assert_eq!(perms.blocked[0].value, kp.public_key().to_encoded());
 }
 
 #[test]
 fn policy_sync_approved_preserves_address() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
     use toq_core::policy::*;
 
     let kp = Keypair::generate();
-    let mut store = PeerStore::default();
-    store.upsert(&kp.public_key(), "toq://original/addr", PeerStatus::Pending);
-
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.approve_pending(&kp.public_key());
-    engine.sync_to_peer_store(&mut store);
 
-    let record = store.get(&kp.public_key()).unwrap();
-    assert_eq!(record.status, PeerStatus::Approved);
-    assert_eq!(record.address, "toq://original/addr");
+    let perms = engine.sync_to_permissions();
+    assert_eq!(perms.approved.len(), 1);
+    assert_eq!(perms.approved[0].rule_type, "key");
+    assert_eq!(perms.approved[0].value, kp.public_key().to_encoded());
 }
 
 #[test]
@@ -1931,52 +1940,42 @@ fn policy_sync_pending_uses_info_address() {
 
 #[test]
 fn policy_roundtrip_load_sync() {
-    use toq_core::keystore::{PeerStatus, PeerStore};
+    use toq_core::config::{PendingEntry, PermissionEntry, PermissionsFile};
     use toq_core::policy::*;
 
     let blocked = Keypair::generate();
     let approved = Keypair::generate();
     let pending = Keypair::generate();
 
-    // Build initial store
-    let mut store = PeerStore::default();
-    store.upsert(
-        &blocked.public_key(),
-        "toq://a/blocked",
-        PeerStatus::Blocked,
-    );
-    store.upsert(
-        &approved.public_key(),
-        "toq://b/approved",
-        PeerStatus::Approved,
-    );
-    store.upsert(
-        &pending.public_key(),
-        "toq://c/pending",
-        PeerStatus::Pending,
-    );
+    let perms = PermissionsFile {
+        approved: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: approved.public_key().to_encoded(),
+        }],
+        blocked: vec![PermissionEntry {
+            rule_type: "key".into(),
+            value: blocked.public_key().to_encoded(),
+        }],
+        pending: vec![PendingEntry {
+            key: pending.public_key().to_encoded(),
+            address: "toq://c/pending".into(),
+            requested_at: "2026-01-01T00:00:00Z".into(),
+        }],
+    };
 
     // Load into engine
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.load_from_peer_store(&store);
+    engine.load_from_permissions(&perms);
 
-    // Sync back to a fresh store
-    let mut store2 = PeerStore::default();
-    engine.sync_to_peer_store(&mut store2);
+    // Sync back
+    let perms2 = engine.sync_to_permissions();
 
-    // Verify all peers present with correct status
-    assert_eq!(
-        store2.get(&blocked.public_key()).unwrap().status,
-        PeerStatus::Blocked
-    );
-    assert_eq!(
-        store2.get(&approved.public_key()).unwrap().status,
-        PeerStatus::Approved
-    );
-    assert_eq!(
-        store2.get(&pending.public_key()).unwrap().status,
-        PeerStatus::Pending
-    );
+    assert_eq!(perms2.approved.len(), 1);
+    assert_eq!(perms2.blocked.len(), 1);
+    assert_eq!(perms2.pending.len(), 1);
+    assert_eq!(perms2.approved[0].value, approved.public_key().to_encoded());
+    assert_eq!(perms2.blocked[0].value, blocked.public_key().to_encoded());
+    assert_eq!(perms2.pending[0].key, pending.public_key().to_encoded());
 }
 
 #[test]

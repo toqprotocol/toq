@@ -389,17 +389,17 @@ async fn api_block_and_unblock() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // Verify in peers list
-    let peers: serde_json::Value = client
-        .get(inst.api_url("/v1/peers"))
+    // Verify in permissions
+    let perms: serde_json::Value = client
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let peers_str = serde_json::to_string(&peers).unwrap();
-    assert!(peers_str.contains("blocked") || peers_str.contains("Blocked"));
+    let perms_str = serde_json::to_string(&perms).unwrap();
+    assert!(perms_str.contains("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
 
     // Unblock
     let resp = client
@@ -637,18 +637,18 @@ async fn block_then_send_fails() {
     assert!(resp.status().is_success());
 
     // Verify blocked
-    let peers: serde_json::Value = client
-        .get(inst.api_url("/v1/peers"))
+    let perms: serde_json::Value = client
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let peers_str = serde_json::to_string(&peers).unwrap();
+    let perms_str = serde_json::to_string(&perms).unwrap();
     assert!(
-        peers_str.contains("blocked") || peers_str.contains("Blocked"),
-        "expected blocked peer in list: {peers_str}"
+        perms_str.contains("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        "expected blocked key in permissions: {perms_str}"
     );
 
     // Unblock
@@ -1349,38 +1349,35 @@ async fn cli_block_unblock() {
     // Block via CLI
     inst.cmd().args(["block", fake_key]).assert().success();
 
-    // Verify block took effect via API
-    let peers: serde_json::Value = Client::new()
-        .get(inst.api_url("/v1/peers"))
+    // Verify block took effect via permissions API
+    let perms: serde_json::Value = Client::new()
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let peers_str = serde_json::to_string(&peers).unwrap();
+    let perms_str = serde_json::to_string(&perms).unwrap();
     assert!(
-        peers_str.contains("blocked"),
-        "CLI block should add to peers: {peers_str}"
+        perms_str.contains("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        "CLI block should add to permissions: {perms_str}"
     );
 
     // Unblock via CLI
     inst.cmd().args(["unblock", fake_key]).assert().success();
 
     // Verify unblock took effect
-    let peers: serde_json::Value = Client::new()
-        .get(inst.api_url("/v1/peers"))
+    let perms: serde_json::Value = Client::new()
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let still_blocked = peers["peers"]
-        .as_array()
-        .map(|a| a.iter().any(|p| p["status"] == "blocked"))
-        .unwrap_or(false);
-    assert!(!still_blocked, "CLI unblock should remove from peers");
+    let blocked = perms["blocked"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert_eq!(blocked, 0, "CLI unblock should remove from permissions");
 
     inst.stop();
 }
@@ -1721,19 +1718,18 @@ async fn api_revoke_approved_peer() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // Verify approved via peers (approve creates a peer store entry)
-    let peers: serde_json::Value = client
-        .get(inst.api_url("/v1/peers"))
+    // Verify approved via permissions
+    let perms: serde_json::Value = client
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let peer_list = peers["peers"].as_array().unwrap();
     assert!(
-        !peer_list.is_empty(),
-        "expected at least one peer after approve"
+        !perms["approved"].as_array().unwrap().is_empty(),
+        "expected at least one approved rule after approve"
     );
 
     // Revoke
@@ -1744,19 +1740,18 @@ async fn api_revoke_approved_peer() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // Verify removed from peers
-    let peers: serde_json::Value = client
-        .get(inst.api_url("/v1/peers"))
+    // Verify removed from permissions
+    let perms: serde_json::Value = client
+        .get(inst.api_url("/v1/permissions"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let peer_list = peers["peers"].as_array().unwrap();
     assert!(
-        peer_list.is_empty(),
-        "expected no peers after revoke, got: {peer_list:?}"
+        perms["approved"].as_array().unwrap().is_empty(),
+        "expected no approved rules after revoke"
     );
 
     inst.stop();

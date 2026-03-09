@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::config::PermissionsFile;
 use crate::constants::MAX_PENDING_APPROVALS;
 use crate::crypto::PublicKey;
 use crate::keystore::{PeerStatus, PeerStore};
@@ -105,37 +106,67 @@ impl PolicyEngine {
     }
 
     /// Populate policy state from the persisted peer store.
-    /// Blocked peers become key-based block rules. Approved peers become
-    /// key-based approve rules. Pending peers are restored into the pending queue.
+    /// Only pending peers are restored from PeerStore (legacy compat).
+    /// Approved/blocked rules are loaded from permissions.toml.
     pub fn load_from_peer_store(&mut self, store: &PeerStore) {
         for (key_str, record) in &store.peers {
+            if record.status != PeerStatus::Pending {
+                continue;
+            }
             let Ok(pk) = PublicKey::from_encoded(key_str) else {
                 continue;
             };
-            let kb = pk.as_bytes().to_vec();
-            match record.status {
-                PeerStatus::Blocked => {
-                    let rule = PermissionRule::Key(kb);
-                    if !self.blocked.contains(&rule) {
-                        self.blocked.push(rule);
-                    }
+            self.pending.insert(
+                pk.as_bytes().to_vec(),
+                PendingInfo {
+                    address: record.address.clone(),
+                    requested_at: record.first_seen.clone(),
+                },
+            );
+        }
+    }
+
+    /// Load all rules (approved, blocked, pending) from permissions.toml.
+    pub fn load_from_permissions(&mut self, perms: &PermissionsFile) {
+        for entry in &perms.approved {
+            let rule = match entry.rule_type.as_str() {
+                "key" => {
+                    let Ok(pk) = PublicKey::from_encoded(&entry.value) else {
+                        continue;
+                    };
+                    PermissionRule::Key(pk.as_bytes().to_vec())
                 }
-                PeerStatus::Approved => {
-                    let rule = PermissionRule::Key(kb);
-                    if !self.approved.contains(&rule) {
-                        self.approved.push(rule);
-                    }
-                }
-                PeerStatus::Pending => {
-                    self.pending.insert(
-                        kb,
-                        PendingInfo {
-                            address: record.address.clone(),
-                            requested_at: record.first_seen.clone(),
-                        },
-                    );
-                }
+                "address" => PermissionRule::Address(entry.value.clone()),
+                _ => continue,
+            };
+            if !self.approved.contains(&rule) {
+                self.approved.push(rule);
             }
+        }
+        for entry in &perms.blocked {
+            let rule = match entry.rule_type.as_str() {
+                "key" => {
+                    let Ok(pk) = PublicKey::from_encoded(&entry.value) else {
+                        continue;
+                    };
+                    PermissionRule::Key(pk.as_bytes().to_vec())
+                }
+                "address" => PermissionRule::Address(entry.value.clone()),
+                _ => continue,
+            };
+            if !self.blocked.contains(&rule) {
+                self.blocked.push(rule);
+            }
+        }
+        for entry in &perms.pending {
+            let Ok(pk) = PublicKey::from_encoded(&entry.key) else {
+                continue;
+            };
+            let kb = pk.as_bytes().to_vec();
+            self.pending.entry(kb).or_insert_with(|| PendingInfo {
+                address: entry.address.clone(),
+                requested_at: entry.requested_at.clone(),
+            });
         }
     }
 
@@ -262,35 +293,66 @@ impl PolicyEngine {
         &self.blocked
     }
 
-    /// Write all policy state back to a peer store for persistence.
-    /// Only key-based rules are persisted (address rules are in config).
+    /// Write pending state back to peer store. Approved/blocked rules
+    /// are persisted via sync_to_permissions instead.
     pub fn sync_to_peer_store(&self, store: &mut PeerStore) {
-        for rule in &self.blocked {
-            if let PermissionRule::Key(kb) = rule
-                && let Some(pk) = PublicKey::from_bytes(kb)
-            {
-                let addr = store
-                    .get(&pk)
-                    .map(|r| r.address.clone())
-                    .unwrap_or_default();
-                store.upsert(&pk, &addr, PeerStatus::Blocked);
-            }
-        }
-        for rule in &self.approved {
-            if let PermissionRule::Key(kb) = rule
-                && let Some(pk) = PublicKey::from_bytes(kb)
-            {
-                let addr = store
-                    .get(&pk)
-                    .map(|r| r.address.clone())
-                    .unwrap_or_default();
-                store.upsert(&pk, &addr, PeerStatus::Approved);
-            }
-        }
         for (kb, info) in &self.pending {
             if let Some(pk) = PublicKey::from_bytes(kb) {
                 store.upsert(&pk, &info.address, PeerStatus::Pending);
             }
+        }
+    }
+
+    /// Write all rules (approved, blocked, pending) to a PermissionsFile.
+    pub fn sync_to_permissions(&self) -> PermissionsFile {
+        use crate::config::{PendingEntry, PermissionEntry};
+
+        let approved = self
+            .approved
+            .iter()
+            .filter_map(|r| match r {
+                PermissionRule::Key(kb) => Some(PermissionEntry {
+                    rule_type: "key".into(),
+                    value: PublicKey::from_bytes(kb)?.to_encoded(),
+                }),
+                PermissionRule::Address(addr) => Some(PermissionEntry {
+                    rule_type: "address".into(),
+                    value: addr.clone(),
+                }),
+            })
+            .collect();
+
+        let blocked = self
+            .blocked
+            .iter()
+            .filter_map(|r| match r {
+                PermissionRule::Key(kb) => Some(PermissionEntry {
+                    rule_type: "key".into(),
+                    value: PublicKey::from_bytes(kb)?.to_encoded(),
+                }),
+                PermissionRule::Address(addr) => Some(PermissionEntry {
+                    rule_type: "address".into(),
+                    value: addr.clone(),
+                }),
+            })
+            .collect();
+
+        let pending = self
+            .pending
+            .iter()
+            .filter_map(|(kb, info)| {
+                Some(PendingEntry {
+                    key: PublicKey::from_bytes(kb)?.to_encoded(),
+                    address: info.address.clone(),
+                    requested_at: info.requested_at.clone(),
+                })
+            })
+            .collect();
+
+        PermissionsFile {
+            approved,
+            blocked,
+            pending,
         }
     }
 

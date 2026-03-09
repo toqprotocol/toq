@@ -676,6 +676,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         _ => ConnectionMode::Approval,
     };
     let mut engine = PolicyEngine::new(policy_mode);
+    let perms_file =
+        toq_core::config::PermissionsFile::load(&toq_core::config::PermissionsFile::path())
+            .unwrap_or_default();
+    engine.load_from_permissions(&perms_file);
     let peer_store =
         toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     engine.load_from_peer_store(&peer_store);
@@ -970,9 +974,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     remove_pid();
     let _ = fs::remove_file(state_path());
 
-    // Persist policy engine state to peer store
+    // Persist policy engine state
     {
         let policy_guard = policy.lock().await;
+        // Save permissions (approved, blocked, pending) to permissions.toml
+        let perms = policy_guard.sync_to_permissions();
+        let _ = perms.save(&toq_core::config::PermissionsFile::path());
+        // Save peer metadata to peer store (no permission status)
         let mut peer_store =
             toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
         policy_guard.sync_to_peer_store(&mut peer_store);
@@ -1621,6 +1629,10 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
         _ => ConnectionMode::Approval,
     };
     let mut engine = PolicyEngine::new(policy_mode);
+    let perms_file =
+        toq_core::config::PermissionsFile::load(&toq_core::config::PermissionsFile::path())
+            .unwrap_or_default();
+    engine.load_from_permissions(&perms_file);
     let peer_store =
         toq_core::keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     engine.load_from_peer_store(&peer_store);
