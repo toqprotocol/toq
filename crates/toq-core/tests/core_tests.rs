@@ -502,13 +502,22 @@ fn connection_state_values() {
 
 // --- Policy ---
 
+fn key_rule(kp: &Keypair) -> toq_core::policy::PermissionRule {
+    toq_core::policy::PermissionRule::Key(kp.public_key().as_bytes().to_vec())
+}
+
+const TEST_ADDR: &str = "toq://test/peer";
+
 #[test]
 fn policy_open_accepts_all() {
     use toq_core::policy::*;
 
     let engine = PolicyEngine::new(ConnectionMode::Open);
     let kp = Keypair::generate();
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -517,8 +526,11 @@ fn policy_blocklist_overrides_open() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
     let kp = Keypair::generate();
-    engine.block(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    engine.block(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]
@@ -527,9 +539,15 @@ fn policy_allowlist_accepts_known() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
     let kp = Keypair::generate();
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
-    engine.allow(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Reject
+    );
+    engine.approve(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -541,13 +559,16 @@ fn policy_approval_flow() {
 
     // Unknown agent gets pending
     assert_eq!(
-        engine.check(&kp.public_key()),
+        engine.check(&kp.public_key(), TEST_ADDR),
         PolicyDecision::PendingApproval
     );
 
     // After approval, accepted immediately
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.approve_pending(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -556,7 +577,7 @@ fn policy_approval_deny() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     let kp = Keypair::generate();
-    engine.add_pending(&kp.public_key(), "toq://test/peer");
+    engine.add_pending(&kp.public_key(), TEST_ADDR);
     assert_eq!(engine.pending_count(), 1);
     engine.deny(&kp.public_key());
     assert_eq!(engine.pending_count(), 0);
@@ -568,10 +589,16 @@ fn policy_block_removes_from_allowlist() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
     let kp = Keypair::generate();
-    engine.allow(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
-    engine.block(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    engine.approve(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
+    engine.block(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]
@@ -580,11 +607,14 @@ fn policy_unblock() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
     let kp = Keypair::generate();
-    engine.block(&kp.public_key());
+    engine.block(key_rule(&kp));
     assert!(engine.is_blocked(&kp.public_key()));
-    engine.unblock(&kp.public_key());
+    engine.unblock(&key_rule(&kp));
     assert!(!engine.is_blocked(&kp.public_key()));
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -593,11 +623,14 @@ fn policy_revoke_removes_access() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     let kp = Keypair::generate();
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
-    engine.revoke(&kp.public_key());
+    engine.approve_pending(&kp.public_key());
     assert_eq!(
-        engine.check(&kp.public_key()),
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
+    engine.revoke(&key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
         PolicyDecision::PendingApproval
     );
 }
@@ -608,10 +641,16 @@ fn policy_revoke_in_allowlist_mode() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
     let kp = Keypair::generate();
-    engine.allow(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
-    engine.revoke(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    engine.approve(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
+    engine.revoke(&key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]
@@ -621,13 +660,19 @@ fn policy_approve_works_across_modes() {
     // Approve in approval mode, then switch to allowlist mode
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     let kp = Keypair::generate();
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.approve_pending(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 
-    // Same key should work in a fresh allowlist engine if we allow it
+    // Same key should work in a fresh allowlist engine if we approve it
     let mut engine2 = PolicyEngine::new(ConnectionMode::Allowlist);
-    engine2.approve(&kp.public_key());
-    assert_eq!(engine2.check(&kp.public_key()), PolicyDecision::Accept);
+    engine2.approve(key_rule(&kp));
+    assert_eq!(
+        engine2.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -636,18 +681,255 @@ fn policy_block_overrides_approved() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     let kp = Keypair::generate();
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
-    engine.block(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
-    // After unblock, not approved anymore
-    engine.unblock(&kp.public_key());
+    engine.approve_pending(&kp.public_key());
     assert_eq!(
-        engine.check(&kp.public_key()),
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Accept
+    );
+    engine.block(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
+        PolicyDecision::Reject
+    );
+    // After unblock, not approved anymore (block removed the approve rule)
+    engine.unblock(&key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), TEST_ADDR),
         PolicyDecision::PendingApproval
     );
 }
 
+fn addr_rule(pattern: &str) -> toq_core::policy::PermissionRule {
+    toq_core::policy::PermissionRule::Address(pattern.to_string())
+}
+
+#[test]
+fn policy_approve_by_address() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.approve(addr_rule("toq://1.2.3.4/bob"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/bob"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/alice"),
+        PolicyDecision::PendingApproval
+    );
+}
+
+#[test]
+fn policy_block_by_address() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    let kp = Keypair::generate();
+    engine.block(addr_rule("toq://evil.com/agent"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://evil.com/agent"),
+        PolicyDecision::Reject
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://good.com/agent"),
+        PolicyDecision::Accept
+    );
+}
+
+#[test]
+fn policy_wildcard_all() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://any/agent"),
+        PolicyDecision::Reject
+    );
+    engine.approve(addr_rule("toq://*"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://any/agent"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://other/thing"),
+        PolicyDecision::Accept
+    );
+}
+
+#[test]
+fn policy_wildcard_host() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    engine.approve(addr_rule("toq://trusted.com/*"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://trusted.com/alice"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://trusted.com/bob"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://untrusted.com/alice"),
+        PolicyDecision::Reject
+    );
+}
+
+#[test]
+fn policy_wildcard_name() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    engine.approve(addr_rule("toq://*/accounting"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/accounting"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://5.6.7.8/accounting"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/sales"),
+        PolicyDecision::Reject
+    );
+}
+
+#[test]
+fn policy_block_wildcard_overrides_approve_key() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+    let kp = Keypair::generate();
+    engine.approve(key_rule(&kp));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://evil.com/agent"),
+        PolicyDecision::Accept
+    );
+    // Block the whole host by wildcard
+    engine.block(addr_rule("toq://evil.com/*"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://evil.com/agent"),
+        PolicyDecision::Reject
+    );
+    // Same key from a different host still works
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://good.com/agent"),
+        PolicyDecision::Accept
+    );
+}
+
+#[test]
+fn policy_approve_wildcard_block_specific() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    engine.approve(addr_rule("toq://1.2.3.4/*"));
+    engine.block(addr_rule("toq://1.2.3.4/bob"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/alice"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://1.2.3.4/bob"),
+        PolicyDecision::Reject
+    );
+}
+
+#[test]
+fn policy_revoke_address_rule() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+    let rule = addr_rule("toq://host/*");
+    engine.approve(rule.clone());
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://host/agent"),
+        PolicyDecision::Accept
+    );
+    engine.revoke(&rule);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://host/agent"),
+        PolicyDecision::Reject
+    );
+}
+
+#[test]
+fn policy_unblock_address_rule() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Open);
+    let kp = Keypair::generate();
+    let rule = addr_rule("toq://bad.com/*");
+    engine.block(rule.clone());
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://bad.com/x"),
+        PolicyDecision::Reject
+    );
+    engine.unblock(&rule);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://bad.com/x"),
+        PolicyDecision::Accept
+    );
+}
+
+#[test]
+fn policy_address_matches_edge_cases() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp = Keypair::generate();
+
+    // Exact address match
+    engine.approve(addr_rule("toq://host/name"));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://host/name"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://host/other"),
+        PolicyDecision::Reject
+    );
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://other/name"),
+        PolicyDecision::Reject
+    );
+}
+
+#[test]
+fn policy_mixed_key_and_address_rules() {
+    use toq_core::policy::*;
+
+    let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
+    let kp1 = Keypair::generate();
+    let kp2 = Keypair::generate();
+
+    // Approve kp1 by key, approve a host by address
+    engine.approve(key_rule(&kp1));
+    engine.approve(addr_rule("toq://trusted.com/*"));
+
+    // kp1 accepted from any address
+    assert_eq!(
+        engine.check(&kp1.public_key(), "toq://random.com/x"),
+        PolicyDecision::Accept
+    );
+    // kp2 accepted only from trusted.com
+    assert_eq!(
+        engine.check(&kp2.public_key(), "toq://trusted.com/y"),
+        PolicyDecision::Accept
+    );
+    assert_eq!(
+        engine.check(&kp2.public_key(), "toq://random.com/y"),
+        PolicyDecision::Reject
+    );
+}
 // --- Replay ---
 
 #[test]
@@ -1461,7 +1743,10 @@ fn policy_load_blocked_peer() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
     engine.load_from_peer_store(&store);
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]
@@ -1475,7 +1760,10 @@ fn policy_load_approved_peer() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.load_from_peer_store(&store);
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -1489,7 +1777,10 @@ fn policy_load_approved_into_allowlist() {
 
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
     engine.load_from_peer_store(&store);
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -1539,8 +1830,14 @@ fn policy_load_mixed_statuses() {
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.load_from_peer_store(&store);
 
-    assert_eq!(engine.check(&blocked.public_key()), PolicyDecision::Reject);
-    assert_eq!(engine.check(&approved.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&blocked.public_key(), "toq://test/peer"),
+        PolicyDecision::Reject
+    );
+    assert_eq!(
+        engine.check(&approved.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
     assert_eq!(engine.pending_count(), 1);
 }
 
@@ -1556,7 +1853,10 @@ fn policy_load_idempotent() {
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.load_from_peer_store(&store);
     engine.load_from_peer_store(&store);
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -1584,7 +1884,9 @@ fn policy_sync_blocked_preserves_address() {
     );
 
     let mut engine = PolicyEngine::new(ConnectionMode::Open);
-    engine.block(&kp.public_key());
+    engine.block(toq_core::policy::PermissionRule::Key(
+        kp.public_key().as_bytes().to_vec(),
+    ));
     engine.sync_to_peer_store(&mut store);
 
     let record = store.get(&kp.public_key()).unwrap();
@@ -1602,7 +1904,7 @@ fn policy_sync_approved_preserves_address() {
     store.upsert(&kp.public_key(), "toq://original/addr", PeerStatus::Pending);
 
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.approve(&kp.public_key());
+    engine.approve_pending(&kp.public_key());
     engine.sync_to_peer_store(&mut store);
 
     let record = store.get(&kp.public_key()).unwrap();
@@ -1683,8 +1985,11 @@ fn policy_approve_adds_to_allowlist() {
 
     let kp = Keypair::generate();
     let mut engine = PolicyEngine::new(ConnectionMode::Allowlist);
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.approve_pending(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -1695,9 +2000,12 @@ fn policy_approve_removes_from_pending() {
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
     engine.add_pending(&kp.public_key(), "toq://test/peer");
     assert_eq!(engine.pending_count(), 1);
-    engine.approve(&kp.public_key());
+    engine.approve_pending(&kp.public_key());
     assert_eq!(engine.pending_count(), 0);
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 }
 
 #[test]
@@ -1706,8 +2014,11 @@ fn policy_approve_not_pending_still_works() {
 
     let kp = Keypair::generate();
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.approve_pending(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
     assert_eq!(engine.pending_count(), 0);
 }
 
@@ -1844,7 +2155,10 @@ fn policy_approval_max_pending() {
     }
 
     let extra = Keypair::generate();
-    assert_eq!(engine.check(&extra.public_key()), PolicyDecision::Reject);
+    assert_eq!(
+        engine.check(&extra.public_key(), "toq://test/peer"),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]
@@ -1853,16 +2167,26 @@ fn policy_block_removes_from_approved() {
 
     let kp = Keypair::generate();
     let mut engine = PolicyEngine::new(ConnectionMode::Approval);
-    engine.approve(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Accept);
+    engine.approve_pending(&kp.public_key());
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Accept
+    );
 
-    engine.block(&kp.public_key());
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    engine.block(toq_core::policy::PermissionRule::Key(
+        kp.public_key().as_bytes().to_vec(),
+    ));
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Reject
+    );
 
-    engine.unblock(&kp.public_key());
+    engine.unblock(&toq_core::policy::PermissionRule::Key(
+        kp.public_key().as_bytes().to_vec(),
+    ));
     // After unblock, not in approved anymore, so goes to PendingApproval
     assert_eq!(
-        engine.check(&kp.public_key()),
+        engine.check(&kp.public_key(), "toq://test/peer"),
         PolicyDecision::PendingApproval
     );
 }
@@ -1873,7 +2197,10 @@ fn policy_dns_verified_rejects_all() {
 
     let engine = PolicyEngine::new(ConnectionMode::DnsVerified);
     let kp = Keypair::generate();
-    assert_eq!(engine.check(&kp.public_key()), PolicyDecision::Reject);
+    assert_eq!(
+        engine.check(&kp.public_key(), "toq://test/peer"),
+        PolicyDecision::Reject
+    );
 }
 
 #[test]

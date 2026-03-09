@@ -755,7 +755,13 @@ pub async fn block_peer(State(state): State<ApiState>, Path(public_key): Path<St
     let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     store.upsert(&pk, "", keystore::PeerStatus::Blocked);
     let _ = store.save(&keystore::peers_path());
-    state.policy.lock().await.block(&pk);
+    state
+        .policy
+        .lock()
+        .await
+        .block(toq_core::policy::PermissionRule::Key(
+            pk.as_bytes().to_vec(),
+        ));
     StatusCode::OK.into_response()
 }
 
@@ -776,7 +782,13 @@ pub async fn unblock_peer(
     let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     store.peers.remove(&public_key);
     let _ = store.save(&keystore::peers_path());
-    state.policy.lock().await.unblock(&pk);
+    state
+        .policy
+        .lock()
+        .await
+        .unblock(&toq_core::policy::PermissionRule::Key(
+            pk.as_bytes().to_vec(),
+        ));
     StatusCode::OK.into_response()
 }
 
@@ -858,7 +870,7 @@ pub async fn resolve_approval(
                 })
                 .map(|p| p.address.clone())
                 .unwrap_or_default();
-            policy.approve(&pk);
+            policy.approve_pending(&pk);
             let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
             store.upsert(&pk, &address, keystore::PeerStatus::Approved);
             let _ = store.save(&keystore::peers_path());
@@ -899,7 +911,9 @@ pub async fn revoke_approval(State(state): State<ApiState>, Path(id): Path<Strin
     };
 
     let mut policy = state.policy.lock().await;
-    policy.revoke(&pk);
+    policy.revoke(&toq_core::policy::PermissionRule::Key(
+        pk.as_bytes().to_vec(),
+    ));
 
     let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
     store.peers.remove(&id);
@@ -1762,7 +1776,13 @@ mod tests {
         let kp = toq_core::crypto::Keypair::generate();
         let encoded = url_encode(&kp.public_key().to_encoded());
 
-        state.policy.lock().await.block(&kp.public_key());
+        state
+            .policy
+            .lock()
+            .await
+            .block(toq_core::policy::PermissionRule::Key(
+                kp.public_key().as_bytes().to_vec(),
+            ));
         assert!(state.policy.lock().await.is_blocked(&kp.public_key()));
 
         let app = crate::api::router(state.clone());
@@ -1806,7 +1826,7 @@ mod tests {
         let policy = state.policy.lock().await;
         assert_eq!(policy.pending_count(), 0);
         assert_eq!(
-            policy.check(&kp.public_key()),
+            policy.check(&kp.public_key(), "toq://test/peer"),
             toq_core::policy::PolicyDecision::Accept
         );
     }
@@ -1861,7 +1881,11 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         assert_eq!(
-            state.policy.lock().await.check(&kp.public_key()),
+            state
+                .policy
+                .lock()
+                .await
+                .check(&kp.public_key(), "toq://test/peer"),
             PolicyDecision::Accept
         );
     }
@@ -1905,9 +1929,13 @@ mod tests {
         let encoded = url_encode(&kp.public_key().to_encoded());
 
         // Approve first
-        state.policy.lock().await.approve(&kp.public_key());
+        state.policy.lock().await.approve_pending(&kp.public_key());
         assert_eq!(
-            state.policy.lock().await.check(&kp.public_key()),
+            state
+                .policy
+                .lock()
+                .await
+                .check(&kp.public_key(), "toq://test/peer"),
             toq_core::policy::PolicyDecision::Accept
         );
 
@@ -1925,7 +1953,11 @@ mod tests {
 
         // Now rejected
         assert_eq!(
-            state.policy.lock().await.check(&kp.public_key()),
+            state
+                .policy
+                .lock()
+                .await
+                .check(&kp.public_key(), "toq://test/peer"),
             toq_core::policy::PolicyDecision::Reject
         );
     }
@@ -1985,8 +2017,14 @@ mod tests {
         let encoded = url_encode(&kp.public_key().to_encoded());
 
         // Approve, then block, then unblock
-        state.policy.lock().await.approve(&kp.public_key());
-        state.policy.lock().await.block(&kp.public_key());
+        state.policy.lock().await.approve_pending(&kp.public_key());
+        state
+            .policy
+            .lock()
+            .await
+            .block(toq_core::policy::PermissionRule::Key(
+                kp.public_key().as_bytes().to_vec(),
+            ));
 
         let app = crate::api::router(state.clone());
         let resp = app
@@ -2001,7 +2039,11 @@ mod tests {
 
         // After unblock, not approved anymore, goes to PendingApproval
         assert_eq!(
-            state.policy.lock().await.check(&kp.public_key()),
+            state
+                .policy
+                .lock()
+                .await
+                .check(&kp.public_key(), "toq://test/peer"),
             toq_core::policy::PolicyDecision::PendingApproval
         );
     }

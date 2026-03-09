@@ -58,7 +58,7 @@ pub async fn accept_connection(
 
     // Policy check
     if let Some(engine) = policy {
-        match engine.check(&hs.peer_public_key) {
+        match engine.check(&hs.peer_public_key, &hs.peer_address.to_string()) {
             PolicyDecision::Accept => {}
             PolicyDecision::Reject => {
                 return Err(Error::InvalidEnvelope(
