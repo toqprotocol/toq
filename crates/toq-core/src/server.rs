@@ -188,3 +188,47 @@ pub async fn connect_to_peer(
 
     Ok((info, tls_stream))
 }
+
+/// Result of a handshake-only ping.
+pub struct PingResult {
+    pub peer_public_key: PublicKey,
+    pub peer_address: Address,
+}
+
+/// Connect to a remote agent and complete only the handshake to learn its
+/// public key. Disconnects immediately after. Does not negotiate features
+/// or exchange cards.
+///
+/// Safe to call against agents in any connection mode. The remote will see
+/// a brief authenticated connection. If the remote is in approval mode, a
+/// pending approval request is created as a side effect.
+pub async fn ping_peer(
+    target: &str,
+    keypair: &Keypair,
+    address: &Address,
+) -> Result<PingResult, Error> {
+    let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(target))
+        .await
+        .map_err(|_| Error::Io("connection timeout".into()))?
+        .map_err(|e| Error::Io(e.to_string()))?;
+
+    let client_cfg = transport::client_config();
+    let mut tls_stream = timeout(HANDSHAKE_TIMEOUT, transport::tls_connect(tcp, client_cfg))
+        .await
+        .map_err(|_| Error::Io("TLS handshake timeout".into()))??;
+
+    let hs = timeout(
+        HANDSHAKE_TIMEOUT,
+        handshake::initiate(&mut tls_stream, keypair, address),
+    )
+    .await
+    .map_err(|_| Error::Io("handshake timeout".into()))??;
+
+    // Disconnect immediately. The server handles the broken pipe gracefully.
+    drop(tls_stream);
+
+    Ok(PingResult {
+        peer_public_key: hs.peer_public_key,
+        peer_address: hs.peer_address,
+    })
+}

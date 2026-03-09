@@ -957,33 +957,23 @@ pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody
             );
         }
     };
-    let card = super::super::load_card(&config, &keypair);
-    let features = Features::default();
     drop(config);
 
     let connect_addr = format!("{}:{}", target.host, target.port);
-    match server::connect_to_peer(&connect_addr, &keypair, &address, &card, &features).await {
-        Ok((info, _stream)) => {
-            let peer_key = info.peer_public_key.to_encoded();
-            let agent_name = info.peer_card.name.clone();
-            json_ok(serde_json::json!({
-                "agent_name": agent_name,
-                "address": body.address,
-                "public_key": peer_key,
-                "reachable": true,
-            }))
-        }
-        Err(e) => {
-            let msg = format!("{e}");
-            // Connection failed but we might have gotten the key during handshake
-            json_ok(serde_json::json!({
-                "agent_name": target.agent_name,
-                "address": body.address,
-                "public_key": null,
-                "reachable": false,
-                "error": msg,
-            }))
-        }
+    match server::ping_peer(&connect_addr, &keypair, &address).await {
+        Ok(result) => json_ok(serde_json::json!({
+            "agent_name": result.peer_address.agent_name,
+            "address": body.address,
+            "public_key": result.peer_public_key.to_encoded(),
+            "reachable": true,
+        })),
+        Err(e) => json_ok(serde_json::json!({
+            "agent_name": target.agent_name,
+            "address": body.address,
+            "public_key": null,
+            "reachable": false,
+            "error": format!("{e}"),
+        })),
     }
 }
 
