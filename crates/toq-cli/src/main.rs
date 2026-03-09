@@ -1503,19 +1503,18 @@ async fn run_ping(address: &str) -> Result<(), Box<dyn std::error::Error>> {
     if resp.status().is_success() {
         let body: serde_json::Value = resp.json().await?;
         let agent = body["agent_name"].as_str().unwrap_or("unknown");
-        let key = body["public_key"].as_str().unwrap_or("unknown");
         let reachable = body["reachable"].as_bool().unwrap_or(false);
-        println!("Agent:      {agent}");
-        println!("Address:    {address}");
-        println!("Public key: {key}");
-        println!(
-            "Status:     {}",
-            if reachable {
-                "reachable"
-            } else {
-                "unreachable"
-            }
-        );
+        if reachable {
+            let key = body["public_key"].as_str().unwrap_or("unknown");
+            println!("Agent:      {agent}");
+            println!("Address:    {address}");
+            println!("Public key: {key}");
+            println!("Status:     reachable");
+        } else {
+            let err = body["error"].as_str().unwrap_or("connection failed");
+            eprintln!("Ping failed: {err}");
+            std::process::exit(1);
+        }
     } else {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         let msg = body["error"]["message"].as_str().unwrap_or("ping failed");
