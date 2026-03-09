@@ -1328,7 +1328,7 @@ async fn run_approve(
                 serde_json::json!({"from": addr})
             }
         };
-        let url = format!("{}/v1/approvals", base);
+        let url = format!("{}/v1/approve", base);
         let resp = reqwest::Client::new().post(&url).json(&body).send().await?;
         if resp.status().is_success() {
             println!("Approved {label}");
