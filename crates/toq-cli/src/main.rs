@@ -1101,14 +1101,12 @@ fn run_peers() -> Result<(), Box<dyn std::error::Error>> {
         println!("No known peers");
         return Ok(());
     }
-    println!("{:<50} {:<12} LAST SEEN", "PUBLIC KEY", "STATUS");
+    println!("{:<50} {:<12} LAST SEEN", "PUBLIC KEY", "ADDRESS");
     for (key, record) in &store.peers {
         let short_key = if key.len() > 45 { &key[..45] } else { key };
         println!(
             "{:<50} {:<12} {}",
-            short_key,
-            format!("{:?}", record.status).to_lowercase(),
-            record.last_seen
+            short_key, record.address, record.last_seen
         );
     }
     Ok(())
@@ -1175,13 +1173,30 @@ async fn run_block(
         }
     }
 
-    // Fallback: modify PeerStore directly (key rules only)
-    if let toq_core::policy::PermissionRule::Key(kb) = &rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    // Fallback: modify permissions.toml directly (daemon not running)
     {
-        let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-        store.upsert(&pk, "", toq_core::keystore::PeerStatus::Blocked);
-        store.save(&keystore::peers_path())?;
+        let path = toq_core::config::PermissionsFile::path();
+        let mut perms = toq_core::config::PermissionsFile::load(&path).unwrap_or_default();
+        let entry = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => toq_core::config::PermissionEntry {
+                rule_type: "key".into(),
+                value: toq_core::crypto::PublicKey::from_bytes(kb)
+                    .map(|pk| pk.to_encoded())
+                    .unwrap_or_default(),
+            },
+            toq_core::policy::PermissionRule::Address(addr) => toq_core::config::PermissionEntry {
+                rule_type: "address".into(),
+                value: addr.clone(),
+            },
+        };
+        if !perms.blocked.contains(&entry) {
+            perms.blocked.push(entry);
+        }
+        // Remove from approved if present
+        perms
+            .approved
+            .retain(|e| e != perms.blocked.last().unwrap());
+        let _ = perms.save(&path);
     }
     println!("Blocked {label}");
     Ok(())
@@ -1216,12 +1231,24 @@ async fn run_unblock(
         }
     }
 
-    if let toq_core::policy::PermissionRule::Key(kb) = &rule
-        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    // Fallback: modify permissions.toml directly (daemon not running)
     {
-        let mut store = toq_core::keystore::PeerStore::load(&keystore::peers_path())?;
-        store.peers.remove(&pk.to_encoded());
-        store.save(&keystore::peers_path())?;
+        let path = toq_core::config::PermissionsFile::path();
+        let mut perms = toq_core::config::PermissionsFile::load(&path).unwrap_or_default();
+        let entry = match &rule {
+            toq_core::policy::PermissionRule::Key(kb) => toq_core::config::PermissionEntry {
+                rule_type: "key".into(),
+                value: toq_core::crypto::PublicKey::from_bytes(kb)
+                    .map(|pk| pk.to_encoded())
+                    .unwrap_or_default(),
+            },
+            toq_core::policy::PermissionRule::Address(addr) => toq_core::config::PermissionEntry {
+                rule_type: "address".into(),
+                value: addr.clone(),
+            },
+        };
+        perms.blocked.retain(|e| e != &entry);
+        let _ = perms.save(&path);
     }
     println!("Unblocked {label}");
     Ok(())

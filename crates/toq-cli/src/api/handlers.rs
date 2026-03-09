@@ -722,13 +722,10 @@ pub async fn list_peers(State(state): State<ApiState>) -> Response {
         .peers
         .iter()
         .map(|(key, record)| {
-            let base_status = format!("{:?}", record.status).to_lowercase();
             let status = if connected_keys.contains(key) {
                 "connected".to_string()
-            } else if base_status == "approved" {
-                "disconnected".to_string()
             } else {
-                base_status
+                "seen".to_string()
             };
             PeerEntry {
                 public_key: key.clone(),
