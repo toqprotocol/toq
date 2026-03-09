@@ -319,11 +319,11 @@ async fn send_to_single(
     let (info, mut stream) = match connect_result {
         Ok(r) => r,
         Err(e) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                ERR_NOT_REACHABLE,
-                format!("Cannot reach target: {e}"),
-            );
+            let msg = match &e {
+                toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                _ => format!("Cannot reach target: {e}"),
+            };
+            return error_response(StatusCode::BAD_GATEWAY, ERR_NOT_REACHABLE, msg);
         }
     };
 

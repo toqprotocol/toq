@@ -73,7 +73,7 @@ pub async fn accept_connection(
                     keypair,
                     address,
                     &hs.peer_address,
-                    Some("Your connection request is pending review."),
+                    Some("Connection pending approval by remote agent"),
                     0,
                 )
                 .await?;

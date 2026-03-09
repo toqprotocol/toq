@@ -9,6 +9,9 @@ pub enum Error {
     #[error("invalid envelope: {0}")]
     InvalidEnvelope(String),
 
+    #[error("{0}")]
+    ConnectionRejected(String),
+
     #[error("invalid signature")]
     InvalidSignature,
 

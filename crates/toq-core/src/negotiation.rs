@@ -106,10 +106,8 @@ where
             let reason = response
                 .body
                 .and_then(|b| b["message"].as_str().map(String::from))
-                .unwrap_or_else(|| "your connection request is pending review".into());
-            Err(Error::InvalidEnvelope(format!(
-                "connection pending approval: {reason}"
-            )))
+                .unwrap_or_else(|| "connection pending approval by remote agent".into());
+            Err(Error::ConnectionRejected(reason))
         }
         _ => Err(Error::InvalidEnvelope("unexpected message type".into())),
     }
