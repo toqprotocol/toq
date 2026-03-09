@@ -615,7 +615,30 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let config = Config::load(&Config::default_path())?;
+    let mut config = Config::load(&Config::default_path())?;
+
+    // If host is "auto", detect public IP on every startup.
+    if config.host == "auto" {
+        let output = std::process::Command::new("curl")
+            .args(["-4", "-s", "--max-time", "5", "ifconfig.me"])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let detected = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if detected.is_empty() {
+                    eprintln!("Failed to detect public IP (empty response)");
+                    std::process::exit(1);
+                }
+                tracing::info!("auto-detected public IP: {detected}");
+                config.host = detected;
+            }
+            _ => {
+                eprintln!("Failed to detect public IP (curl failed)");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
     let (certs, key) =
         keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
@@ -1875,6 +1898,26 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  [!!] port {} in use or unavailable", config.port);
                 issues += 1;
             }
+        }
+    }
+
+    // Check if configured IP matches current public IP
+    if config.host != "auto"
+        && config.host.parse::<std::net::IpAddr>().is_ok()
+        && let Ok(output) = std::process::Command::new("curl")
+            .args(["-4", "-s", "--max-time", "5", "ifconfig.me"])
+            .output()
+    {
+        let detected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !detected.is_empty() && detected != config.host {
+            println!(
+                "  [!!] configured IP ({}) does not match detected public IP ({})",
+                config.host, detected
+            );
+            println!("       update config or set host = \"auto\" for dynamic IPs");
+            issues += 1;
+        } else if !detected.is_empty() {
+            println!("  [ok] public IP matches config ({})", config.host);
         }
     }
 
