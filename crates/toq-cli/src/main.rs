@@ -303,9 +303,25 @@ fn remove_pid() {
 }
 
 fn read_pid() -> Option<u32> {
-    fs::read_to_string(pid_path())
+    let pid: u32 = fs::read_to_string(pid_path())
         .ok()
-        .and_then(|s| s.trim().parse().ok())
+        .and_then(|s| s.trim().parse().ok())?;
+
+    // Verify the process is actually alive using `kill -0`.
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+
+    if alive {
+        Some(pid)
+    } else {
+        // Stale PID file, clean it up.
+        let _ = fs::remove_file(pid_path());
+        None
+    }
 }
 
 fn setup_logging() {
