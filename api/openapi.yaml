@@ -996,7 +996,8 @@ components:
           example: "toq://peer.example.com/assistant"
         status:
           type: string
-          enum: [connected, disconnected, pending, blocked]
+          enum: [connected, seen]
+          description: "connected if active session, seen otherwise"
         last_seen:
           type: string
           format: date-time
