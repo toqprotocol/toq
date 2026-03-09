@@ -792,6 +792,201 @@ pub async fn unblock_peer(
     StatusCode::OK.into_response()
 }
 
+// ── Rule-based permissions ──────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RuleBody {
+    pub key: Option<String>,
+    pub from: Option<String>,
+}
+
+fn parse_rule(
+    body: &RuleBody,
+) -> Result<toq_core::policy::PermissionRule, (StatusCode, &'static str, &'static str)> {
+    use toq_core::policy::PermissionRule;
+    if let Some(addr) = &body.from {
+        return Ok(PermissionRule::Address(addr.clone()));
+    }
+    if let Some(k) = &body.key {
+        match toq_core::crypto::PublicKey::from_encoded(k) {
+            Ok(pk) => return Ok(PermissionRule::Key(pk.as_bytes().to_vec())),
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_REQUEST,
+                    "Invalid public key",
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        ERR_INVALID_REQUEST,
+        "Specify 'key' or 'from'",
+    ))
+}
+
+pub async fn block_rule(State(state): State<ApiState>, Json(body): Json<RuleBody>) -> Response {
+    let rule = match parse_rule(&body) {
+        Ok(r) => r,
+        Err((status, code, msg)) => return error_response(status, code, msg),
+    };
+    // Persist key-based rules to PeerStore
+    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+        store.upsert(&pk, "", keystore::PeerStatus::Blocked);
+        let _ = store.save(&keystore::peers_path());
+    }
+    state.policy.lock().await.block(rule);
+    StatusCode::OK.into_response()
+}
+
+pub async fn unblock_rule(State(state): State<ApiState>, Json(body): Json<RuleBody>) -> Response {
+    let rule = match parse_rule(&body) {
+        Ok(r) => r,
+        Err((status, code, msg)) => return error_response(status, code, msg),
+    };
+    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+        store.peers.remove(&pk.to_encoded());
+        let _ = store.save(&keystore::peers_path());
+    }
+    state.policy.lock().await.unblock(&rule);
+    StatusCode::OK.into_response()
+}
+
+pub async fn approve_rule(State(state): State<ApiState>, Json(body): Json<RuleBody>) -> Response {
+    let rule = match parse_rule(&body) {
+        Ok(r) => r,
+        Err((status, code, msg)) => return error_response(status, code, msg),
+    };
+    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+        store.upsert(&pk, "", keystore::PeerStatus::Approved);
+        let _ = store.save(&keystore::peers_path());
+    }
+    state.policy.lock().await.approve(rule);
+    StatusCode::OK.into_response()
+}
+
+pub async fn revoke_rule(State(state): State<ApiState>, Json(body): Json<RuleBody>) -> Response {
+    let rule = match parse_rule(&body) {
+        Ok(r) => r,
+        Err((status, code, msg)) => return error_response(status, code, msg),
+    };
+    if let toq_core::policy::PermissionRule::Key(ref kb) = rule
+        && let Some(pk) = toq_core::crypto::PublicKey::from_bytes(kb)
+    {
+        let mut store = keystore::PeerStore::load(&keystore::peers_path()).unwrap_or_default();
+        store.peers.remove(&pk.to_encoded());
+        let _ = store.save(&keystore::peers_path());
+    }
+    state.policy.lock().await.revoke(&rule);
+    StatusCode::OK.into_response()
+}
+
+pub async fn list_permissions(State(state): State<ApiState>) -> Response {
+    use toq_core::policy::PermissionRule;
+
+    let policy = state.policy.lock().await;
+    let format_rule = |r: &PermissionRule| match r {
+        PermissionRule::Key(kb) => {
+            let val = toq_core::crypto::PublicKey::from_bytes(kb)
+                .map(|pk| pk.to_encoded())
+                .unwrap_or_else(|| "invalid".into());
+            serde_json::json!({"type": "key", "value": val})
+        }
+        PermissionRule::Address(addr) => {
+            serde_json::json!({"type": "address", "value": addr})
+        }
+    };
+
+    let approved: Vec<_> = policy.list_approved().iter().map(format_rule).collect();
+    let blocked: Vec<_> = policy.list_blocked().iter().map(format_rule).collect();
+
+    json_ok(serde_json::json!({
+        "approved": approved,
+        "blocked": blocked,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct PingBody {
+    pub address: String,
+}
+
+pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody>) -> Response {
+    use toq_core::server;
+
+    let target: Address = match body.address.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_REQUEST,
+                "Invalid toq address",
+            );
+        }
+    };
+
+    let keypair = match keystore::load_keypair(&keystore::identity_key_path()) {
+        Ok(kp) => kp,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Failed to load keypair",
+            );
+        }
+    };
+
+    let config = state.config.lock().await;
+    let address = match Address::new(&config.host, &config.agent_name) {
+        Ok(a) => a,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Invalid local address",
+            );
+        }
+    };
+    let card = super::super::load_card(&config, &keypair);
+    let features = Features::default();
+    drop(config);
+
+    let connect_addr = format!("{}:{}", target.host, target.port);
+    match server::connect_to_peer(&connect_addr, &keypair, &address, &card, &features).await {
+        Ok((info, _stream)) => {
+            let peer_key = info.peer_public_key.to_encoded();
+            let agent_name = info.peer_card.name.clone();
+            json_ok(serde_json::json!({
+                "agent_name": agent_name,
+                "address": body.address,
+                "public_key": peer_key,
+                "reachable": true,
+            }))
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            // Connection failed but we might have gotten the key during handshake
+            json_ok(serde_json::json!({
+                "agent_name": target.agent_name,
+                "address": body.address,
+                "public_key": null,
+                "reachable": false,
+                "error": msg,
+            }))
+        }
+    }
+}
+
 // ── Discovery ───────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -2046,5 +2241,172 @@ mod tests {
                 .check(&kp.public_key(), "toq://test/peer"),
             toq_core::policy::PolicyDecision::PendingApproval
         );
+    }
+
+    #[tokio::test]
+    async fn block_rule_by_address() {
+        let state = test_state();
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/block")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://evil.com/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(state.policy.lock().await.list_blocked().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn approve_rule_by_address() {
+        let state = test_state();
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://trusted.com/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(state.policy.lock().await.list_approved().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn approve_rule_by_key() {
+        let state = test_state();
+        let kp = toq_core::crypto::Keypair::generate();
+        let body = serde_json::json!({"key": kp.public_key().to_encoded()});
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            state
+                .policy
+                .lock()
+                .await
+                .check(&kp.public_key(), "toq://any/addr"),
+            toq_core::policy::PolicyDecision::Accept
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_rule_removes_access() {
+        let state = test_state();
+        // Approve first
+        let app = crate::api::router(state.clone());
+        let _ = app
+            .oneshot(
+                Request::post("/v1/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://host/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.policy.lock().await.list_approved().len(), 1);
+
+        // Revoke
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/revoke")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://host/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(state.policy.lock().await.list_approved().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn unblock_rule_removes_block() {
+        let state = test_state();
+        let app = crate::api::router(state.clone());
+        let _ = app
+            .oneshot(
+                Request::post("/v1/block")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://bad.com/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.policy.lock().await.list_blocked().len(), 1);
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::delete("/v1/block")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"toq://bad.com/*"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(state.policy.lock().await.list_blocked().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_permissions_returns_rules() {
+        let state = test_state();
+        state
+            .policy
+            .lock()
+            .await
+            .approve(toq_core::policy::PermissionRule::Address(
+                "toq://host/*".into(),
+            ));
+        state
+            .policy
+            .lock()
+            .await
+            .block(toq_core::policy::PermissionRule::Address(
+                "toq://evil.com/*".into(),
+            ));
+
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(Request::get("/v1/permissions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["approved"].as_array().unwrap().len(), 1);
+        assert_eq!(body["blocked"].as_array().unwrap().len(), 1);
+        assert_eq!(body["approved"][0]["type"], "address");
+        assert_eq!(body["approved"][0]["value"], "toq://host/*");
+    }
+
+    #[tokio::test]
+    async fn rule_missing_key_and_from_returns_400() {
+        let app = crate::api::router(test_state());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/block")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
     }
 }

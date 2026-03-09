@@ -31,6 +31,8 @@ pub fn router(state: ApiState) -> Router {
             "/v1/peers/{public_key}/block",
             post(block_peer).delete(unblock_peer),
         )
+        // Block/unblock with JSON body (new)
+        .route("/v1/block", post(block_rule).delete(unblock_rule))
         // Discovery
         .route("/v1/discover", get(discover_dns))
         .route("/v1/discover/local", get(discover_local))
@@ -38,6 +40,13 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{id}", post(resolve_approval))
         .route("/v1/approvals/{id}/revoke", post(revoke_approval))
+        // Approve/revoke with JSON body (new)
+        .route("/v1/approve", post(approve_rule))
+        .route("/v1/revoke", post(revoke_rule))
+        // Permissions
+        .route("/v1/permissions", get(list_permissions))
+        // Ping
+        .route("/v1/ping", post(ping_agent))
         // History
         .route("/v1/messages/history", get(message_history))
         // Connections
