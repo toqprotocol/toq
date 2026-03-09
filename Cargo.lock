@@ -2301,7 +2301,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toq-cli"
-version = "0.1.0-dev.4"
+version = "0.1.0-dev.5"
 dependencies = [
  "aes-gcm",
  "assert_cmd",
@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "toq-core"
-version = "0.1.0-dev.4"
+version = "0.1.0-dev.5"
 dependencies = [
  "aes-gcm",
  "base64",
