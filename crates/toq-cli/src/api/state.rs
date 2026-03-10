@@ -24,6 +24,233 @@ pub fn history_path() -> std::path::PathBuf {
     crate::dirs_path().join("messages.jsonl")
 }
 
+/// Path to handler log directory.
+pub fn handler_log_dir() -> std::path::PathBuf {
+    crate::dirs_path()
+        .join(toq_core::constants::LOGS_DIR)
+        .join(toq_core::constants::HANDLER_LOGS_DIR)
+}
+
+/// Tracks a running handler process.
+struct ActiveProcess {
+    pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    abort: tokio::task::AbortHandle,
+}
+
+/// Manages handler dispatch, process tracking, and logging.
+pub struct HandlerManager {
+    handlers: toq_core::config::HandlersFile,
+    active: std::collections::HashMap<String, Vec<ActiveProcess>>,
+}
+
+impl HandlerManager {
+    pub fn new(handlers: toq_core::config::HandlersFile) -> Self {
+        let _ = std::fs::create_dir_all(handler_log_dir());
+        Self {
+            handlers,
+            active: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn handlers_file_mut(&mut self) -> &mut toq_core::config::HandlersFile {
+        &mut self.handlers
+    }
+
+    /// Save current handlers to disk.
+    pub fn save(&self) -> Result<(), toq_core::error::Error> {
+        self.handlers.save(&toq_core::config::HandlersFile::path())
+    }
+
+    /// Dispatch a message to all matching handlers.
+    pub fn dispatch(
+        &mut self,
+        msg: &IncomingMessage,
+        from_key: Option<&toq_core::crypto::PublicKey>,
+    ) {
+        let matching: Vec<toq_core::config::HandlerEntry> = self
+            .handlers
+            .handlers
+            .iter()
+            .filter(|h| toq_core::handler::matches_handler(h, &msg.from, from_key, &msg.msg_type))
+            .cloned()
+            .collect();
+
+        for handler in matching {
+            self.spawn_handler(&handler, msg);
+        }
+    }
+
+    fn spawn_handler(&mut self, handler: &toq_core::config::HandlerEntry, msg: &IncomingMessage) {
+        let json = match serde_json::to_string(msg) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("handler {}: failed to serialize message: {e}", handler.name);
+                return;
+            }
+        };
+
+        let name = handler.name.clone();
+        let command = handler.command.clone();
+        let from = msg.from.clone();
+        let text = msg
+            .body
+            .as_ref()
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let thread_id = msg.thread_id.clone().unwrap_or_default();
+        let msg_type = msg.msg_type.clone();
+        let msg_id = msg.id.clone();
+        let log_dir = handler_log_dir();
+
+        // Shared slot for the child PID so the outer scope can read it.
+        let child_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let child_pid_inner = child_pid.clone();
+
+        let task = tokio::spawn(async move {
+            let mut child = match tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .env("TOQ_FROM", &from)
+                .env("TOQ_TEXT", &text)
+                .env("TOQ_THREAD_ID", &thread_id)
+                .env("TOQ_TYPE", &msg_type)
+                .env("TOQ_ID", &msg_id)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("handler {name}: failed to spawn: {e}");
+                    return;
+                }
+            };
+
+            // Record child PID for tracking
+            let pid = child.id().unwrap_or(0);
+            child_pid_inner.store(pid, std::sync::atomic::Ordering::Relaxed);
+
+            // Write message JSON to stdin
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(json.as_bytes()).await;
+                drop(stdin);
+            }
+
+            let output = match child.wait_with_output().await {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::warn!("handler {name}: wait failed: {e}");
+                    return;
+                }
+            };
+
+            // Log output to handler-specific log file
+            let log_path = log_dir.join(format!("handler-{name}.log"));
+            let ts = toq_core::now_utc();
+            let mut log_lines = String::new();
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                log_lines.push_str(&format!("[{ts} pid:{pid}] {line}\n"));
+            }
+            for line in String::from_utf8_lossy(&output.stderr).lines() {
+                log_lines.push_str(&format!("[{ts} pid:{pid}:stderr] {line}\n"));
+            }
+            if !output.status.success() {
+                log_lines.push_str(&format!(
+                    "[{ts} pid:{pid}] exited with status {}\n",
+                    output.status
+                ));
+            }
+            if !log_lines.is_empty() {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        f.write_all(log_lines.as_bytes())
+                    });
+            }
+        });
+
+        let abort = task.abort_handle();
+        self.active
+            .entry(handler.name.clone())
+            .or_default()
+            .push(ActiveProcess {
+                pid: child_pid,
+                abort,
+            });
+    }
+
+    /// Clean up finished processes from tracking.
+    pub fn reap(&mut self) {
+        for procs in self.active.values_mut() {
+            procs.retain(|p| !p.abort.is_finished());
+        }
+        self.active.retain(|_, v| !v.is_empty());
+    }
+
+    /// Stop all active processes for a handler.
+    pub fn stop(&mut self, name: &str) -> usize {
+        if let Some(procs) = self.active.remove(name) {
+            let count = procs.len();
+            for p in procs {
+                p.abort.abort();
+            }
+            count
+        } else {
+            0
+        }
+    }
+
+    /// Stop a specific process by PID.
+    pub fn stop_pid(&mut self, name: &str, pid: u32) -> bool {
+        if let Some(procs) = self.active.get_mut(name)
+            && let Some(idx) = procs
+                .iter()
+                .position(|p| p.pid.load(std::sync::atomic::Ordering::Relaxed) == pid)
+        {
+            let p = procs.remove(idx);
+            p.abort.abort();
+            return true;
+        }
+        false
+    }
+
+    /// List all handlers with active process counts.
+    pub fn list(&mut self) -> Vec<HandlerStatus> {
+        self.reap();
+        self.handlers
+            .handlers
+            .iter()
+            .map(|h| HandlerStatus {
+                name: h.name.clone(),
+                command: h.command.clone(),
+                enabled: h.enabled,
+                active: self.active.get(&h.name).map_or(0, |v| v.len()),
+                filter_from: h.filter_from.clone(),
+                filter_key: h.filter_key.clone(),
+                filter_type: h.filter_type.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Handler info for listing.
+pub struct HandlerStatus {
+    pub name: String,
+    pub command: String,
+    pub enabled: bool,
+    pub active: usize,
+    pub filter_from: Vec<String>,
+    pub filter_key: Vec<String>,
+    pub filter_type: Vec<String>,
+}
+
 /// Ring buffer of recent messages with JSONL persistence.
 pub struct MessageHistory {
     messages: VecDeque<IncomingMessage>,
@@ -129,6 +356,7 @@ pub struct ApiState {
     pub sessions: Arc<Mutex<SessionStore>>,
     pub active_streams: Arc<Mutex<std::collections::HashMap<String, ActiveStream>>>,
     pub history: Arc<Mutex<MessageHistory>>,
+    pub handler_manager: Arc<Mutex<HandlerManager>>,
 }
 
 /// Parameters for constructing [`ApiState`].
@@ -152,6 +380,9 @@ impl ApiState {
             .message_history_limit
             .unwrap_or(DEFAULT_HISTORY_LIMIT);
         let history = MessageHistory::load_from_file(limit);
+        let handlers =
+            toq_core::config::HandlersFile::load(&toq_core::config::HandlersFile::path())
+                .unwrap_or_default();
         Self {
             config: Arc::new(Mutex::new(p.config)),
             keypair: Arc::new(RwLock::new(p.keypair)),
@@ -166,6 +397,7 @@ impl ApiState {
             sessions: p.sessions,
             active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             history: Arc::new(Mutex::new(history)),
+            handler_manager: Arc::new(Mutex::new(HandlerManager::new(handlers))),
         }
     }
 }

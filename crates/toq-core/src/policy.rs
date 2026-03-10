@@ -52,7 +52,7 @@ impl PermissionRule {
 /// - `toq://host/*` matches any agent on that host
 /// - `toq://*/name` matches that agent name on any host
 /// - `toq://host/name` exact match
-fn address_matches(pattern: &str, address: &str) -> bool {
+pub fn address_matches(pattern: &str, address: &str) -> bool {
     let pat = pattern.strip_prefix("toq://").unwrap_or(pattern);
     let addr = address.strip_prefix("toq://").unwrap_or(address);
 

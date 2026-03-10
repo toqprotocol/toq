@@ -1798,3 +1798,132 @@ async fn api_message_history_with_limit() {
 
     inst.stop();
 }
+
+// --- Handler API ---
+
+#[tokio::test]
+async fn api_handler_crud() {
+    let mut inst = Instance::new("api-handler", "open", 30290, 30289);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // List: empty
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/handlers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["handlers"].as_array().unwrap().len(), 0);
+
+    // Add a handler
+    let resp = client
+        .post(inst.api_url("/v1/handlers"))
+        .json(&serde_json::json!({
+            "name": "test-handler",
+            "command": "echo hello",
+            "filter_from": ["toq://host/*"],
+            "filter_type": ["message.send"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // List: one handler
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/handlers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let handlers = resp["handlers"].as_array().unwrap();
+    assert_eq!(handlers.len(), 1);
+    assert_eq!(handlers[0]["name"], "test-handler");
+    assert_eq!(handlers[0]["enabled"], true);
+
+    // Duplicate name returns conflict
+    let resp = client
+        .post(inst.api_url("/v1/handlers"))
+        .json(&serde_json::json!({
+            "name": "test-handler",
+            "command": "echo dup"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+
+    // Update: disable
+    let resp = client
+        .put(inst.api_url("/v1/handlers/test-handler"))
+        .json(&serde_json::json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/handlers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["handlers"][0]["enabled"], false);
+
+    // Delete
+    let resp = client
+        .delete(inst.api_url("/v1/handlers/test-handler"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // List: empty again
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/v1/handlers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["handlers"].as_array().unwrap().len(), 0);
+
+    // Delete nonexistent returns 404
+    let resp = client
+        .delete(inst.api_url("/v1/handlers/nope"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    inst.stop();
+}
+
+#[tokio::test]
+async fn api_handler_reload() {
+    let mut inst = Instance::new("api-handler-rl", "open", 30292, 30291);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // Reload returns success even with no handlers
+    let resp = client
+        .post(inst.api_url("/v1/handlers/reload"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    inst.stop();
+}

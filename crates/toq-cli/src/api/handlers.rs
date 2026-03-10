@@ -1665,6 +1665,152 @@ pub async fn get_agent_card(State(state): State<ApiState>) -> Response {
     })
 }
 
+// ── Handlers ────────────────────────────────────────────────
+
+pub async fn list_handlers(State(state): State<ApiState>) -> impl IntoResponse {
+    let mut mgr = state.handler_manager.lock().await;
+    let handlers: Vec<serde_json::Value> = mgr
+        .list()
+        .into_iter()
+        .map(|h| {
+            serde_json::json!({
+                "name": h.name,
+                "command": h.command,
+                "enabled": h.enabled,
+                "active": h.active,
+                "filter_from": h.filter_from,
+                "filter_key": h.filter_key,
+                "filter_type": h.filter_type,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "handlers": handlers }))
+}
+
+pub async fn add_handler(
+    State(state): State<ApiState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let name = match body["name"].as_str() {
+        Some(n) => n.to_string(),
+        None => {
+            return error_response(StatusCode::BAD_REQUEST, ERR_INVALID_REQUEST, "missing name");
+        }
+    };
+    let command = match body["command"].as_str() {
+        Some(c) => c.to_string(),
+        None => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_REQUEST,
+                "missing command",
+            );
+        }
+    };
+    let filter_from = json_string_array(&body, "filter_from");
+    let filter_key = json_string_array(&body, "filter_key");
+    let filter_type = json_string_array(&body, "filter_type");
+
+    let entry = toq_core::config::HandlerEntry {
+        name: name.clone(),
+        command,
+        enabled: true,
+        filter_from,
+        filter_key,
+        filter_type,
+    };
+
+    let mut mgr = state.handler_manager.lock().await;
+    if let Err(e) = mgr.handlers_file_mut().add(entry) {
+        return error_response(StatusCode::CONFLICT, ERR_INVALID_REQUEST, e.to_string());
+    }
+    if let Err(e) = mgr.save() {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INVALID_REQUEST,
+            e.to_string(),
+        );
+    }
+    Json(serde_json::json!({"status": "added", "name": name})).into_response()
+}
+
+pub async fn remove_handler(State(state): State<ApiState>, Path(name): Path<String>) -> Response {
+    let mut mgr = state.handler_manager.lock().await;
+    if mgr.handlers_file_mut().remove(&name) {
+        mgr.stop(&name);
+        let _ = mgr.save();
+        Json(serde_json::json!({"status": "removed", "name": name})).into_response()
+    } else {
+        error_response(StatusCode::NOT_FOUND, ERR_NOT_FOUND, "handler not found")
+    }
+}
+
+pub async fn update_handler(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let mut mgr = state.handler_manager.lock().await;
+    let h = match mgr.handlers_file_mut().get_mut(&name) {
+        Some(h) => h,
+        None => return error_response(StatusCode::NOT_FOUND, ERR_NOT_FOUND, "handler not found"),
+    };
+    if let Some(cmd) = body["command"].as_str() {
+        h.command = cmd.to_string();
+    }
+    if let Some(e) = body["enabled"].as_bool() {
+        h.enabled = e;
+    }
+    if body.get("filter_from").is_some() {
+        h.filter_from = json_string_array(&body, "filter_from");
+    }
+    if body.get("filter_key").is_some() {
+        h.filter_key = json_string_array(&body, "filter_key");
+    }
+    if body.get("filter_type").is_some() {
+        h.filter_type = json_string_array(&body, "filter_type");
+    }
+    let _ = mgr.save();
+    Json(serde_json::json!({"status": "updated", "name": name})).into_response()
+}
+
+pub async fn reload_handlers(State(state): State<ApiState>) -> impl IntoResponse {
+    let handlers = toq_core::config::HandlersFile::load(&toq_core::config::HandlersFile::path())
+        .unwrap_or_default();
+    let mut mgr = state.handler_manager.lock().await;
+    *mgr.handlers_file_mut() = handlers;
+    Json(serde_json::json!({"status": "reloaded"}))
+}
+
+pub async fn stop_handler(
+    State(state): State<ApiState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let name = match body["name"].as_str() {
+        Some(n) => n,
+        None => {
+            return error_response(StatusCode::BAD_REQUEST, ERR_INVALID_REQUEST, "missing name");
+        }
+    };
+    let mut mgr = state.handler_manager.lock().await;
+    let stopped = if let Some(pid) = body["pid"].as_u64() {
+        if mgr.stop_pid(name, pid as u32) { 1 } else { 0 }
+    } else {
+        mgr.stop(name)
+    };
+    Json(serde_json::json!({"stopped": stopped, "name": name})).into_response()
+}
+
+fn json_string_array(body: &serde_json::Value, key: &str) -> Vec<String> {
+    body[key]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2346,5 +2492,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn handler_add_list_remove() {
+        let state = test_state();
+        let app = crate::api::router(state.clone());
+
+        // Add handler
+        let resp = app
+            .oneshot(
+                Request::post("/v1/handlers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"test","command":"echo hi","filter_type":["message.send"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // List handlers
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(Request::get("/v1/handlers").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["handlers"].as_array().unwrap().len(), 1);
+        assert_eq!(body["handlers"][0]["name"], "test");
+
+        // Duplicate returns 409
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/handlers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"test","command":"echo dup"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 409);
+
+        // Remove handler
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::delete("/v1/handlers/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Remove nonexistent returns 404
+        let app = crate::api::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::delete("/v1/handlers/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
     }
 }

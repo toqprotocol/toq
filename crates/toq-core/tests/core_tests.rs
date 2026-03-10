@@ -2526,3 +2526,276 @@ fn config_default_path() {
     let path = Config::default_path();
     assert!(path.ends_with(".toq/config.toml"));
 }
+
+// --- Handler filter matching ---
+
+#[test]
+fn handler_matches_no_filters() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    let h = HandlerEntry {
+        name: "all".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec![],
+        filter_key: vec![],
+        filter_type: vec![],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        None,
+        "message.send"
+    ));
+}
+
+#[test]
+fn handler_disabled_never_matches() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    let h = HandlerEntry {
+        name: "off".into(),
+        command: "echo".into(),
+        enabled: false,
+        filter_from: vec![],
+        filter_key: vec![],
+        filter_type: vec![],
+    };
+    assert!(!matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        None,
+        "message.send"
+    ));
+}
+
+#[test]
+fn handler_matches_from_wildcard() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    let h = HandlerEntry {
+        name: "host".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec!["toq://1.2.3.4/*".into()],
+        filter_key: vec![],
+        filter_type: vec![],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        None,
+        "message.send"
+    ));
+    assert!(!matches_handler(
+        &h,
+        "toq://5.6.7.8/alice",
+        None,
+        "message.send"
+    ));
+}
+
+#[test]
+fn handler_matches_from_or_logic() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    let h = HandlerEntry {
+        name: "multi".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec!["toq://abc.com/*".into(), "toq://def.com/*".into()],
+        filter_key: vec![],
+        filter_type: vec![],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://abc.com/agent",
+        None,
+        "message.send"
+    ));
+    assert!(matches_handler(
+        &h,
+        "toq://def.com/agent",
+        None,
+        "message.send"
+    ));
+    assert!(!matches_handler(
+        &h,
+        "toq://other.com/agent",
+        None,
+        "message.send"
+    ));
+}
+
+#[test]
+fn handler_matches_type_filter() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    let h = HandlerEntry {
+        name: "msgs".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec![],
+        filter_key: vec![],
+        filter_type: vec!["message.send".into()],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        None,
+        "message.send"
+    ));
+    assert!(!matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        None,
+        "thread.close"
+    ));
+}
+
+#[test]
+fn handler_matches_key_filter() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::crypto::Keypair;
+    use toq_core::handler::matches_handler;
+
+    let kp = Keypair::generate();
+    let h = HandlerEntry {
+        name: "keyed".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec![],
+        filter_key: vec![kp.public_key().to_encoded()],
+        filter_type: vec![],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        Some(&kp.public_key()),
+        "message.send"
+    ));
+
+    let other = Keypair::generate();
+    assert!(!matches_handler(
+        &h,
+        "toq://1.2.3.4/alice",
+        Some(&other.public_key()),
+        "message.send"
+    ));
+}
+
+#[test]
+fn handler_matches_cross_type_and() {
+    use toq_core::config::HandlerEntry;
+    use toq_core::handler::matches_handler;
+
+    // from AND type must both match
+    let h = HandlerEntry {
+        name: "strict".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec!["toq://abc.com/*".into()],
+        filter_key: vec![],
+        filter_type: vec!["message.send".into()],
+    };
+    assert!(matches_handler(
+        &h,
+        "toq://abc.com/agent",
+        None,
+        "message.send"
+    ));
+    assert!(!matches_handler(
+        &h,
+        "toq://abc.com/agent",
+        None,
+        "thread.close"
+    ));
+    assert!(!matches_handler(
+        &h,
+        "toq://other.com/agent",
+        None,
+        "message.send"
+    ));
+}
+
+// --- HandlersFile persistence ---
+
+#[test]
+fn handlers_file_add_remove() {
+    use toq_core::config::{HandlerEntry, HandlersFile};
+
+    let mut file = HandlersFile::default();
+    let entry = HandlerEntry {
+        name: "test".into(),
+        command: "echo hi".into(),
+        enabled: true,
+        filter_from: vec![],
+        filter_key: vec![],
+        filter_type: vec![],
+    };
+    file.add(entry.clone()).unwrap();
+    assert_eq!(file.handlers.len(), 1);
+
+    // Duplicate name errors
+    assert!(file.add(entry).is_err());
+
+    assert!(file.remove("test"));
+    assert!(file.handlers.is_empty());
+    assert!(!file.remove("nonexistent"));
+}
+
+#[test]
+fn handlers_file_save_and_load() {
+    use toq_core::config::{HandlerEntry, HandlersFile};
+
+    let dir = std::env::temp_dir().join(format!("toq-test-handlers-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("handlers.toml");
+
+    let mut file = HandlersFile::default();
+    file.add(HandlerEntry {
+        name: "logger".into(),
+        command: "bash log.sh".into(),
+        enabled: true,
+        filter_from: vec!["toq://host/*".into()],
+        filter_key: vec![],
+        filter_type: vec!["message.send".into()],
+    })
+    .unwrap();
+    file.save(&path).unwrap();
+
+    let loaded = HandlersFile::load(&path).unwrap();
+    assert_eq!(loaded.handlers.len(), 1);
+    assert_eq!(loaded.handlers[0].name, "logger");
+    assert_eq!(loaded.handlers[0].filter_from, vec!["toq://host/*"]);
+    assert_eq!(loaded.handlers[0].filter_type, vec!["message.send"]);
+    assert!(loaded.handlers[0].enabled);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn handlers_file_get_and_enable_disable() {
+    use toq_core::config::{HandlerEntry, HandlersFile};
+
+    let mut file = HandlersFile::default();
+    file.add(HandlerEntry {
+        name: "h1".into(),
+        command: "echo".into(),
+        enabled: true,
+        filter_from: vec![],
+        filter_key: vec![],
+        filter_type: vec![],
+    })
+    .unwrap();
+
+    assert!(file.get("h1").unwrap().enabled);
+    file.get_mut("h1").unwrap().enabled = false;
+    assert!(!file.get("h1").unwrap().enabled);
+    assert!(file.get("nonexistent").is_none());
+}

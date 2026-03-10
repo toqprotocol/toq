@@ -145,6 +145,9 @@ pub const SESSION_ID_PREFIX: &str = "sess-";
 /// Subdirectory for logs within ~/.toq/.
 pub const LOGS_DIR: &str = "logs";
 
+/// Subdirectory for handler logs within ~/.toq/logs/.
+pub const HANDLER_LOGS_DIR: &str = "handlers";
+
 /// Log filename.
 pub const LOG_FILE: &str = "toq.log";
 

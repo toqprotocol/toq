@@ -67,6 +67,14 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/config", get(get_config).patch(update_config))
         // Agent card
         .route("/v1/card", get(get_agent_card))
+        // Handlers
+        .route("/v1/handlers", get(list_handlers).post(add_handler))
+        .route("/v1/handlers/reload", post(reload_handlers))
+        .route("/v1/handlers/stop", post(stop_handler))
+        .route(
+            "/v1/handlers/{name}",
+            axum::routing::delete(remove_handler).put(update_handler),
+        )
         .with_state(state)
 }
 

@@ -184,6 +184,49 @@ enum Commands {
         #[arg(long)]
         follow: bool,
     },
+    /// Manage message handlers.
+    Handler {
+        #[command(subcommand)]
+        action: HandlerAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HandlerAction {
+    /// Register a new message handler.
+    Add {
+        /// Handler name.
+        name: String,
+        /// Shell command to execute.
+        #[arg(long)]
+        command: String,
+        /// Filter by sender address/wildcard (repeatable, OR logic).
+        #[arg(long = "from")]
+        filter_from: Vec<String>,
+        /// Filter by sender public key (repeatable, OR logic).
+        #[arg(long = "key")]
+        filter_key: Vec<String>,
+        /// Filter by message type (repeatable, OR logic).
+        #[arg(long = "type")]
+        filter_type: Vec<String>,
+    },
+    /// List registered handlers.
+    List,
+    /// Remove a handler.
+    Remove { name: String },
+    /// Enable a disabled handler.
+    Enable { name: String },
+    /// Disable a handler without removing it.
+    Disable { name: String },
+    /// Stop running handler processes.
+    Stop {
+        name: String,
+        /// Stop a specific process by PID.
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Show handler logs.
+    Logs { name: String },
 }
 
 #[tokio::main]
@@ -253,6 +296,7 @@ async fn main() {
         Commands::Ping { ref address } => run_ping(address).await,
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
+        Commands::Handler { action } => run_handler(action).await,
     };
 
     if let Err(e) = result {
@@ -777,6 +821,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     });
     let message_tx = api_state.message_tx.clone();
     let history_store = api_state.history.clone();
+    let handler_mgr = api_state.handler_manager.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
     let api_address = format!("127.0.0.1:{}", config.api_port);
@@ -814,6 +859,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 let msg_count = messages_in.clone();
                 let msg_tx = message_tx.clone();
                 let history = history_store.clone();
+                let handlers = handler_mgr.clone();
 
                 tokio::spawn(async move {
                     // Lock policy only for accept_connection, release after
@@ -871,7 +917,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                             timestamp: toq_core::now_utc(),
                                         };
                                         history.lock().await.push(&incoming);
-                                        let _ = msg_tx.send(incoming);
+                                        let _ = msg_tx.send(incoming.clone());
+
+                                        // Dispatch to matching handlers
+                                        handlers.lock().await.dispatch(&incoming, Some(&info.peer_public_key));
 
                                         // Deliver to adapter
                                         if let Some(ref url) = adapter_url_clone {
@@ -915,6 +964,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                                         };
                                         if envelope.msg_type == MessageType::StreamEnd {
                                             history.lock().await.push(&incoming);
+                                            // Dispatch to handlers on stream completion
+                                            handlers.lock().await.dispatch(&incoming, Some(&info.peer_public_key));
                                         }
                                         let _ = msg_tx.send(incoming);
 
@@ -1256,7 +1307,12 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
     if log_dir.exists() {
         for entry in fs::read_dir(&log_dir)? {
             let entry = entry?;
-            let _ = fs::remove_file(entry.path());
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
         }
     }
     // Also clear message history file
@@ -2038,6 +2094,168 @@ fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_handler(action: HandlerAction) -> Result<(), Box<dyn std::error::Error>> {
+    let path = toq_core::config::HandlersFile::path();
+
+    /// Notify the running daemon to reload handlers.toml.
+    async fn notify_reload() {
+        if read_pid().is_some()
+            && let Ok(base) = api_base()
+        {
+            let _ = reqwest::Client::new()
+                .post(format!("{base}/v1/handlers/reload"))
+                .send()
+                .await;
+        }
+    }
+
+    match action {
+        HandlerAction::Add {
+            name,
+            command,
+            filter_from,
+            filter_key,
+            filter_type,
+        } => {
+            let mut file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
+            let entry = toq_core::config::HandlerEntry {
+                name: name.clone(),
+                command,
+                enabled: true,
+                filter_from,
+                filter_key,
+                filter_type,
+            };
+            file.add(entry).map_err(|e| format!("{e}"))?;
+            file.save(&path)?;
+            notify_reload().await;
+            println!("Added handler '{name}'");
+        }
+        HandlerAction::List => {
+            let file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
+            if file.handlers.is_empty() {
+                println!("No handlers registered");
+                return Ok(());
+            }
+
+            // If daemon is running, get active counts
+            let active_counts: std::collections::HashMap<String, usize> = if read_pid().is_some()
+                && let Ok(base) = api_base()
+            {
+                let counts = async {
+                    let resp = reqwest::Client::new()
+                        .get(format!("{base}/v1/handlers"))
+                        .send()
+                        .await
+                        .ok()?;
+                    let body: serde_json::Value = resp.json().await.ok()?;
+                    body["handlers"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|h| {
+                                let name = h["name"].as_str()?.to_string();
+                                let active = h["active"].as_u64()? as usize;
+                                Some((name, active))
+                            })
+                            .collect()
+                    })
+                }
+                .await;
+                counts.unwrap_or_default()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+            println!("{:<20} {:<8} {:<8} FILTER", "NAME", "ENABLED", "ACTIVE");
+            for h in &file.handlers {
+                let active = active_counts.get(&h.name).copied().unwrap_or(0);
+                let enabled = if h.enabled { "yes" } else { "no" };
+                let mut filters = Vec::new();
+                if !h.filter_from.is_empty() {
+                    filters.push(format!("from: {}", h.filter_from.join(", ")));
+                }
+                if !h.filter_key.is_empty() {
+                    filters.push(format!("key: {}", h.filter_key.join(", ")));
+                }
+                if !h.filter_type.is_empty() {
+                    filters.push(format!("type: {}", h.filter_type.join(", ")));
+                }
+                let filter_str = if filters.is_empty() {
+                    "(all)".to_string()
+                } else {
+                    filters.join("; ")
+                };
+                println!("{:<20} {:<8} {:<8} {}", h.name, enabled, active, filter_str);
+            }
+        }
+        HandlerAction::Remove { name } => {
+            let mut file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
+            if file.remove(&name) {
+                file.save(&path)?;
+                notify_reload().await;
+                println!("Removed handler '{name}'");
+            } else {
+                eprintln!("Handler '{name}' not found");
+                std::process::exit(1);
+            }
+        }
+        HandlerAction::Enable { name } => {
+            let mut file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
+            if let Some(h) = file.get_mut(&name) {
+                h.enabled = true;
+                file.save(&path)?;
+                notify_reload().await;
+                println!("Enabled handler '{name}'");
+            } else {
+                eprintln!("Handler '{name}' not found");
+                std::process::exit(1);
+            }
+        }
+        HandlerAction::Disable { name } => {
+            let mut file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
+            if let Some(h) = file.get_mut(&name) {
+                h.enabled = false;
+                file.save(&path)?;
+                notify_reload().await;
+                println!("Disabled handler '{name}'");
+            } else {
+                eprintln!("Handler '{name}' not found");
+                std::process::exit(1);
+            }
+        }
+        HandlerAction::Stop { name, pid } => {
+            require_running();
+            let base = api_base()?;
+            let body = if let Some(p) = pid {
+                serde_json::json!({"name": name, "pid": p})
+            } else {
+                serde_json::json!({"name": name})
+            };
+            let resp = reqwest::Client::new()
+                .post(format!("{base}/v1/handlers/stop"))
+                .json(&body)
+                .send()
+                .await?;
+            if resp.status().is_success() {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                let stopped = body["stopped"].as_u64().unwrap_or(0);
+                println!("Stopped {stopped} process(es) for '{name}'");
+            } else {
+                eprintln!("Failed to stop handler '{name}'");
+            }
+        }
+        HandlerAction::Logs { name } => {
+            let log_path = api::state::handler_log_dir().join(format!("handler-{name}.log"));
+            if !log_path.exists() {
+                println!("No logs for handler '{name}'");
+                return Ok(());
+            }
+            let content = fs::read_to_string(&log_path)?;
+            print!("{content}");
+        }
+    }
     Ok(())
 }
 

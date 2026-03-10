@@ -207,3 +207,87 @@ impl PermissionsFile {
         std::fs::write(path, annotated).map_err(|e| Error::Io(e.to_string()))
     }
 }
+
+/// A registered message handler as stored in `handlers.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HandlerEntry {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_from: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_key: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_type: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Handlers file at `~/.toq/handlers.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HandlersFile {
+    #[serde(default)]
+    pub handlers: Vec<HandlerEntry>,
+}
+
+impl HandlersFile {
+    pub fn path() -> PathBuf {
+        dirs_path().join("handlers.toml")
+    }
+
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(path).map_err(|e| Error::Io(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| Error::Io(e.to_string()))
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
+        }
+        let toml_str = toml::to_string_pretty(self).map_err(|e| Error::Io(e.to_string()))?;
+        let annotated = format!(
+            "# toq message handlers\n\
+             # Edit while the daemon is stopped, or use CLI commands while running.\n\
+             # Filters: filter_from (address/wildcard), filter_key (public key), filter_type (message type)\n\
+             # Same filter type = OR, different types = AND\n\n\
+             {toml_str}"
+        );
+        std::fs::write(path, annotated).map_err(|e| Error::Io(e.to_string()))
+    }
+
+    /// Add a handler. Returns error if name already exists.
+    pub fn add(&mut self, entry: HandlerEntry) -> Result<(), Error> {
+        if self.handlers.iter().any(|h| h.name == entry.name) {
+            return Err(Error::Io(format!(
+                "handler '{}' already exists",
+                entry.name
+            )));
+        }
+        self.handlers.push(entry);
+        Ok(())
+    }
+
+    /// Remove a handler by name. Returns true if found.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let len = self.handlers.len();
+        self.handlers.retain(|h| h.name != name);
+        self.handlers.len() < len
+    }
+
+    /// Find a handler by name.
+    pub fn get(&self, name: &str) -> Option<&HandlerEntry> {
+        self.handlers.iter().find(|h| h.name == name)
+    }
+
+    /// Find a handler by name (mutable).
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut HandlerEntry> {
+        self.handlers.iter_mut().find(|h| h.name == name)
+    }
+}

@@ -12,6 +12,7 @@ pub mod envelope;
 pub mod error;
 pub mod error_catalog;
 pub mod framing;
+pub mod handler;
 pub mod handshake;
 pub mod keystore;
 pub mod messaging;
