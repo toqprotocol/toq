@@ -117,6 +117,7 @@ impl HandlerManager {
                 .env("TOQ_THREAD_ID", &thread_id)
                 .env("TOQ_TYPE", &msg_type)
                 .env("TOQ_ID", &msg_id)
+                .env("TOQ_HANDLER", &name)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
