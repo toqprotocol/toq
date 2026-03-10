@@ -56,6 +56,13 @@ pub struct SendMessageParams {
     pub timeout: u32,
 }
 
+#[derive(Clone, Deserialize)]
+pub struct StreamFilterParams {
+    pub from: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+}
+
 fn default_timeout() -> u32 {
     30
 }
@@ -443,10 +450,23 @@ async fn send_to_single(
 
 pub async fn stream_messages(
     State(state): State<ApiState>,
+    Query(params): Query<StreamFilterParams>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.message_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(msg) => Some(Ok(Event::default().json_data(msg).unwrap_or_default())),
+    let stream = BroadcastStream::new(rx).filter_map(move |result| match result {
+        Ok(msg) => {
+            if let Some(ref from) = params.from
+                && !toq_core::policy::address_matches(from, &msg.from)
+            {
+                return None;
+            }
+            if let Some(ref msg_type) = params.r#type
+                && msg.msg_type != *msg_type
+            {
+                return None;
+            }
+            Some(Ok(Event::default().json_data(msg).unwrap_or_default()))
+        }
         Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())

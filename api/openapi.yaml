@@ -103,7 +103,19 @@ paths:
         Live feed of messages. Includes incoming messages from remote
         agents and outgoing messages sent by this agent. Messages
         received while disconnected are not replayed. Multiple
-        concurrent connections are supported.
+        concurrent connections are supported. Optional query parameters
+        filter the stream server-side.
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+          description: Filter by sender address or wildcard pattern (e.g. toq://host/*).
+        - name: type
+          in: query
+          schema:
+            type: string
+          description: Filter by message type (e.g. message.send).
       responses:
         "200":
           description: SSE stream of messages.
@@ -778,6 +790,121 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentCard"
 
+  # ── Handlers ──────────────────────────────────────────────
+
+  /v1/handlers:
+    get:
+      operationId: listHandlers
+      summary: List registered message handlers.
+      responses:
+        "200":
+          description: All handlers with active process counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HandlersResponse"
+    post:
+      operationId: addHandler
+      summary: Register a new message handler.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HandlerRequest"
+      responses:
+        "200":
+          description: Handler added.
+        "409":
+          description: Handler name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/handlers/{name}:
+    delete:
+      operationId: removeHandler
+      summary: Remove a handler and stop its active processes.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Handler removed.
+        "404":
+          description: Handler not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      operationId: updateHandler
+      summary: Update a handler's command, filters, or enabled state.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HandlerUpdateRequest"
+      responses:
+        "200":
+          description: Handler updated.
+        "404":
+          description: Handler not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/handlers/reload:
+    post:
+      operationId: reloadHandlers
+      summary: Reload handlers from handlers.toml.
+      responses:
+        "200":
+          description: Handlers reloaded.
+
+  /v1/handlers/stop:
+    post:
+      operationId: stopHandler
+      summary: Stop active processes for a handler.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                pid:
+                  type: integer
+                  description: Stop a specific process by PID. Omit to stop all.
+      responses:
+        "200":
+          description: Processes stopped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stopped:
+                    type: integer
+                  name:
+                    type: string
+
 components:
   schemas:
     # ── Messages ────────────────────────────────────────────
@@ -1372,6 +1499,83 @@ components:
           type: integer
         connection_mode:
           type: string
+
+    # ── Handlers ────────────────────────────────────────────
+
+    HandlerRequest:
+      type: object
+      required:
+        - name
+        - command
+      properties:
+        name:
+          type: string
+        command:
+          type: string
+        filter_from:
+          type: array
+          items:
+            type: string
+        filter_key:
+          type: array
+          items:
+            type: string
+        filter_type:
+          type: array
+          items:
+            type: string
+
+    HandlerUpdateRequest:
+      type: object
+      properties:
+        command:
+          type: string
+        enabled:
+          type: boolean
+        filter_from:
+          type: array
+          items:
+            type: string
+        filter_key:
+          type: array
+          items:
+            type: string
+        filter_type:
+          type: array
+          items:
+            type: string
+
+    HandlerEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        command:
+          type: string
+        enabled:
+          type: boolean
+        active:
+          type: integer
+        filter_from:
+          type: array
+          items:
+            type: string
+        filter_key:
+          type: array
+          items:
+            type: string
+        filter_type:
+          type: array
+          items:
+            type: string
+
+    HandlersResponse:
+      type: object
+      properties:
+        handlers:
+          type: array
+          items:
+            $ref: "#/components/schemas/HandlerEntry"
 
     # ── Error ───────────────────────────────────────────────
 
