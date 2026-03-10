@@ -127,8 +127,17 @@ enum Commands {
         key: Option<String>,
         agent: Option<String>,
     },
-    /// Send a test message to an agent.
-    Send { address: String, message: String },
+    /// Send a message to an agent.
+    Send {
+        address: String,
+        message: String,
+        /// Continue an existing thread.
+        #[arg(long)]
+        thread_id: Option<String>,
+        /// Close the thread after sending.
+        #[arg(long)]
+        close_thread: bool,
+    },
     /// Start a dummy agent that prints incoming messages.
     Listen,
     /// Export keys, config, and peer list as an encrypted backup.
@@ -272,7 +281,9 @@ async fn main() {
         Commands::Send {
             ref address,
             ref message,
-        } => run_send(address, message).await,
+            ref thread_id,
+            close_thread,
+        } => run_send(address, message, thread_id.as_deref(), close_thread).await,
         Commands::Listen => run_listen().await,
         Commands::Export { ref path } => run_export(path),
         Commands::Import { ref path } => run_import(path),
@@ -1610,26 +1621,34 @@ fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_send(
+    target: &str,
+    message: &str,
+    thread_id: Option<&str>,
+    close_thread: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     require_setup();
 
     // If daemon is running, send through the local API (tracks counters, history, SSE)
     if read_pid().is_some() {
         let url = format!("{}/v1/messages?wait=true", api_base()?);
         let client = reqwest::Client::new();
-        let resp = client
-            .post(&url)
-            .json(&serde_json::json!({
-                "to": target,
-                "body": { "text": message }
-            }))
-            .send()
-            .await?;
-        let body: serde_json::Value = resp.json().await?;
-        if let Some(status) = body["status"].as_str() {
-            let id = body["id"].as_str().unwrap_or("unknown");
+        let mut body = serde_json::json!({
+            "to": target,
+            "body": { "text": message }
+        });
+        if let Some(tid) = thread_id {
+            body["thread_id"] = serde_json::json!(tid);
+        }
+        if close_thread {
+            body["close_thread"] = serde_json::json!(true);
+        }
+        let resp = client.post(&url).json(&body).send().await?;
+        let resp_body: serde_json::Value = resp.json().await?;
+        if let Some(status) = resp_body["status"].as_str() {
+            let id = resp_body["id"].as_str().unwrap_or("unknown");
             println!("Sent message {id} (status: {status})");
-        } else if let Some(err) = body["error"]["message"].as_str() {
+        } else if let Some(err) = resp_body["error"]["message"].as_str() {
             eprintln!("Send failed: {err}");
         } else {
             eprintln!("Send failed: unexpected response");
@@ -1664,12 +1683,16 @@ async fn run_send(target: &str, message: &str) -> Result<(), Box<dyn std::error:
             to: std::slice::from_ref(&target_addr),
             sequence: 2,
             body: Some(serde_json::json!({ "text": message })),
-            thread_id: None,
+            thread_id: thread_id.map(String::from),
             reply_to: None,
             priority: None,
             content_type: Some(toq_core::constants::DEFAULT_CONTENT_TYPE.into()),
             ttl: None,
-            msg_type: None,
+            msg_type: if close_thread {
+                Some(MessageType::ThreadClose)
+            } else {
+                None
+            },
         },
     )
     .await?;
@@ -2304,5 +2327,42 @@ mod tests {
     #[test]
     fn resolve_rule_no_args_errors() {
         assert!(resolve_rule(None, None, None).is_err());
+    }
+
+    #[test]
+    fn send_command_accepts_thread_id() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["toq", "send", "toq://h/a", "hi", "--thread-id", "t1"]);
+        match cli.command {
+            Commands::Send { thread_id, .. } => assert_eq!(thread_id.as_deref(), Some("t1")),
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_command_accepts_close_thread() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["toq", "send", "toq://h/a", "bye", "--close-thread"]);
+        match cli.command {
+            Commands::Send { close_thread, .. } => assert!(close_thread),
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_command_defaults() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["toq", "send", "toq://h/a", "hi"]);
+        match cli.command {
+            Commands::Send {
+                thread_id,
+                close_thread,
+                ..
+            } => {
+                assert!(thread_id.is_none());
+                assert!(!close_thread);
+            }
+            _ => panic!("expected Send"),
+        }
     }
 }
