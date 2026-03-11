@@ -551,9 +551,42 @@ fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Remove stale agent registry entries (dead PIDs).
+fn clean_stale_agents() {
+    let dir = agents_registry_dir();
+    if !dir.exists() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "toml")
+                && let Ok(contents) = fs::read_to_string(&path)
+            {
+                let pid: i64 = contents
+                    .lines()
+                    .find(|l| l.starts_with("pid"))
+                    .and_then(|l| l.split('=').nth(1))
+                    .and_then(|v| v.trim().trim_matches('"').parse().ok())
+                    .unwrap_or(0);
+                let alive = pid > 0
+                    && std::process::Command::new("kill")
+                        .args(["-0", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .is_ok_and(|s| s.success());
+                if !alive {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
+}
+
 fn run_agents() -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let agents_dir = PathBuf::from(home).join(".toq").join("agents");
+    clean_stale_agents();
+    let agents_dir = agents_registry_dir();
 
     if !agents_dir.exists() {
         println!("No agents registered");
@@ -589,19 +622,15 @@ fn run_agents() -> Result<(), Box<dyn std::error::Error>> {
                     .stderr(std::process::Stdio::null())
                     .status()
                     .is_ok_and(|s| s.success());
-            let status = if alive { "running" } else { "stopped" };
+            if !alive {
+                continue;
+            }
 
             if !found {
-                println!(
-                    "{:<16} {:<8} {:<8} {:<10} CONFIG",
-                    "NAME", "PORT", "PID", "STATUS"
-                );
+                println!("{:<16} {:<8} {:<8} CONFIG", "NAME", "PORT", "PID");
                 found = true;
             }
-            println!(
-                "{:<16} {:<8} {:<8} {:<10} {config_dir}",
-                name, port, pid, status
-            );
+            println!("{:<16} {:<8} {:<8} {config_dir}", name, port, pid);
         }
     }
 
@@ -818,6 +847,7 @@ fn run_setup(
 
 async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     require_setup();
+    clean_stale_agents();
 
     // Daemon mode: re-exec in background
     if !foreground {
@@ -871,7 +901,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     setup_logging();
     write_pid()?;
-    register_agent(&config.agent_name, config.port, &dirs_path())?;
 
     let address = Address::new(&config.host, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
@@ -907,6 +936,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         config.port
     );
     let listener = server::bind(&bind_addr).await?;
+    register_agent(&config.agent_name, config.port, &dirs_path())?;
 
     tracing::info!("toq up on {}", address);
     println!("toq up on {address}");
