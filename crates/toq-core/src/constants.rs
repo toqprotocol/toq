@@ -139,6 +139,9 @@ pub const TOQ_DIR_NAME: &str = ".toq";
 /// Environment variable to override the config directory.
 pub const TOQ_CONFIG_DIR_ENV: &str = "TOQ_CONFIG_DIR";
 
+/// Subdirectory for agent registry within ~/.toq/.
+pub const AGENTS_DIR: &str = "agents";
+
 /// Config filename.
 pub const CONFIG_FILE: &str = "config.toml";
 

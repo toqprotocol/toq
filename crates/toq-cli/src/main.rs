@@ -401,6 +401,43 @@ fn read_pid() -> Option<u32> {
     }
 }
 
+/// Global agents registry directory: always `~/.toq/agents/` regardless of workspace.
+fn agents_registry_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home)
+        .join(toq_core::constants::TOQ_DIR_NAME)
+        .join(toq_core::constants::AGENTS_DIR)
+}
+
+fn register_agent(
+    name: &str,
+    port: u16,
+    config_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = agents_registry_dir();
+    fs::create_dir_all(&dir)?;
+    let content = format!(
+        "name = \"{name}\"\n\
+         port = {port}\n\
+         pid = {}\n\
+         config_dir = \"{}\"\n\
+         started_at = \"{}\"\n",
+        std::process::id(),
+        config_dir.display(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default(),
+    );
+    fs::write(dir.join(format!("{name}.toml")), content)?;
+    Ok(())
+}
+
+fn unregister_agent(name: &str) {
+    let path = agents_registry_dir().join(format!("{name}.toml"));
+    let _ = fs::remove_file(path);
+}
+
 fn setup_logging() {
     let log_dir = dirs_path().join(LOGS_DIR);
     let _ = fs::create_dir_all(&log_dir);
@@ -788,12 +825,12 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         let log_dir = dirs_path().join(LOGS_DIR);
         let _ = fs::create_dir_all(&log_dir);
         let log_file = fs::File::create(log_path())?;
-        let child = std::process::Command::new(exe)
-            .arg("up")
-            .arg("--foreground")
-            .stdout(log_file.try_clone()?)
-            .stderr(log_file)
-            .spawn()?;
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("up").arg("--foreground");
+        // Pass resolved config dir to background process
+        let resolved = dirs_path();
+        cmd.arg("--config-dir").arg(&resolved);
+        let child = cmd.stdout(log_file.try_clone()?).stderr(log_file).spawn()?;
         println!("toq started as daemon (PID {})", child.id());
         return Ok(());
     }
@@ -834,6 +871,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     setup_logging();
     write_pid()?;
+    register_agent(&config.agent_name, config.port, &dirs_path())?;
 
     let address = Address::new(&config.host, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
@@ -1182,6 +1220,9 @@ fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     let _ = fs::remove_file(pid_path());
                     let _ = fs::remove_file(state_path());
+                    if let Ok(cfg) = Config::load(&Config::default_path()) {
+                        unregister_agent(&cfg.agent_name);
+                    }
                 } else {
                     eprintln!("Failed to stop PID {pid}");
                 }
