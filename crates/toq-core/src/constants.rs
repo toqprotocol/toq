@@ -136,6 +136,9 @@ pub const ADAPTER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The toq data directory name.
 pub const TOQ_DIR_NAME: &str = ".toq";
 
+/// Environment variable to override the config directory.
+pub const TOQ_CONFIG_DIR_ENV: &str = "TOQ_CONFIG_DIR";
+
 /// Config filename.
 pub const CONFIG_FILE: &str = "config.toml";
 

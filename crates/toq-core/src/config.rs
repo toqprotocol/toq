@@ -146,8 +146,22 @@ impl Config {
     }
 }
 
-/// The `~/.toq/` directory path.
+/// Resolved toq config directory.
+///
+/// Resolution order:
+/// 1. `TOQ_CONFIG_DIR` env var (set by `--config-dir` flag)
+/// 2. `.toq/` in current working directory (workspace mode)
+/// 3. `~/.toq/` (global fallback)
 pub fn dirs_path() -> PathBuf {
+    if let Ok(dir) = std::env::var(TOQ_CONFIG_DIR_ENV) {
+        return PathBuf::from(dir);
+    }
+
+    let cwd_toq = PathBuf::from(TOQ_DIR_NAME);
+    if cwd_toq.is_dir() {
+        return cwd_toq.canonicalize().unwrap_or(cwd_toq);
+    }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(TOQ_DIR_NAME)
 }

@@ -65,12 +65,25 @@ fn centered_logo() -> String {
 #[derive(Parser)]
 #[command(name = "toq", version, about = ABOUT)]
 struct Cli {
+    /// Override config directory (default: .toq/ in cwd, then ~/.toq/)
+    #[arg(long, global = true)]
+    config_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a workspace. Creates .toq/ in the current directory.
+    Init {
+        /// Agent name
+        #[arg(long, default_value = "agent")]
+        name: String,
+        /// Port (use "auto" for automatic assignment)
+        #[arg(long, default_value = "auto")]
+        port: String,
+    },
     /// Interactive guided setup. Generates keys, creates config.
     Setup {
         /// Run without prompts, using provided flags or defaults.
@@ -185,6 +198,8 @@ enum Commands {
     Permissions,
     /// Ping a remote agent to discover its public key.
     Ping { address: String },
+    /// List all registered agents on this machine.
+    Agents,
     /// Update the toq binary.
     Upgrade,
     /// Show recent log entries.
@@ -248,7 +263,13 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Set config dir env var before any config resolution
+    if let Some(ref dir) = cli.config_dir {
+        unsafe { std::env::set_var(toq_core::constants::TOQ_CONFIG_DIR_ENV, dir) };
+    }
+
     let result = match cli.command {
+        Commands::Init { ref name, ref port } => run_init(name, port),
         Commands::Setup {
             non_interactive,
             agent_name,
@@ -305,6 +326,7 @@ async fn main() {
         Commands::Doctor => run_doctor().await,
         Commands::Permissions => run_permissions().await,
         Commands::Ping { ref address } => run_ping(address).await,
+        Commands::Agents => run_agents(),
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
         Commands::Handler { action } => run_handler(action).await,
@@ -454,6 +476,102 @@ fn detect_host() -> String {
         })
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|_| "localhost".into())
+}
+
+fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let toq_dir = PathBuf::from(".toq");
+    if toq_dir.exists() {
+        return Err("Workspace already initialized (.toq/ exists)".into());
+    }
+
+    fs::create_dir_all(toq_dir.join(LOGS_DIR))?;
+
+    // Write config.toml
+    let port_line = if port == "auto" {
+        "# port = 9009  # auto-assigned on startup".to_string()
+    } else {
+        format!("port = {port}")
+    };
+    let config_content = format!(
+        "# toq workspace config\n\
+         \n\
+         agent_name = \"{name}\"\n\
+         {port_line}\n"
+    );
+    fs::write(toq_dir.join("config.toml"), config_content)?;
+
+    // Write .gitignore
+    let gitignore = "identity.key\npeer_store.json\nmessages.jsonl\nlogs/\n";
+    fs::write(toq_dir.join(".gitignore"), gitignore)?;
+
+    // Write empty handlers.toml
+    fs::write(toq_dir.join("handlers.toml"), "")?;
+
+    println!("Initialized workspace in .toq/");
+    println!("  Agent: {name}");
+    println!("  Port: {port}");
+    println!("\nRun `toq up` to start the agent");
+    Ok(())
+}
+
+fn run_agents() -> Result<(), Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let agents_dir = PathBuf::from(home).join(".toq").join("agents");
+
+    if !agents_dir.exists() {
+        println!("No agents registered");
+        return Ok(());
+    }
+
+    let mut found = false;
+    for entry in fs::read_dir(&agents_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "toml") {
+            let contents = fs::read_to_string(&path)?;
+
+            let get = |key: &str| -> String {
+                contents
+                    .lines()
+                    .find(|l| l.starts_with(key))
+                    .and_then(|l| l.split('=').nth(1))
+                    .map(|v| v.trim().trim_matches('"').to_string())
+                    .unwrap_or_default()
+            };
+
+            let name = get("name");
+            let port = get("port");
+            let pid_str = get("pid");
+            let config_dir = get("config_dir");
+            let pid: i64 = pid_str.parse().unwrap_or(0);
+
+            let alive = pid > 0
+                && std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+            let status = if alive { "running" } else { "stopped" };
+
+            if !found {
+                println!(
+                    "{:<16} {:<8} {:<8} {:<10} CONFIG",
+                    "NAME", "PORT", "PID", "STATUS"
+                );
+                found = true;
+            }
+            println!(
+                "{:<16} {:<8} {:<8} {:<10} {config_dir}",
+                name, port, pid, status
+            );
+        }
+    }
+
+    if !found {
+        println!("No agents registered");
+    }
+    Ok(())
 }
 
 fn run_setup(
