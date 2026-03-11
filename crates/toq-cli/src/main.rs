@@ -438,6 +438,36 @@ fn unregister_agent(name: &str) {
     let _ = fs::remove_file(path);
 }
 
+/// Find an available port starting from DEFAULT_PORT, skipping ports claimed by other agents.
+fn find_available_port() -> u16 {
+    let dir = agents_registry_dir();
+    let mut claimed: Vec<u16> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if let Ok(contents) = fs::read_to_string(entry.path())
+                && let Some(port) = contents
+                    .lines()
+                    .find(|l| l.starts_with("port"))
+                    .and_then(|l| l.split('=').nth(1))
+                    .and_then(|v| v.trim().parse::<u16>().ok())
+            {
+                claimed.push(port);
+            }
+        }
+    }
+
+    let mut port = toq_core::constants::DEFAULT_PORT;
+    loop {
+        if !claimed.contains(&port) {
+            return port;
+        }
+        port += 2; // protocol port and API port are consecutive
+        if port > 9999 {
+            return toq_core::constants::DEFAULT_PORT;
+        }
+    }
+}
+
 fn setup_logging() {
     let log_dir = dirs_path().join(LOGS_DIR);
     let _ = fs::create_dir_all(&log_dir);
@@ -525,7 +555,7 @@ fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // Write config.toml
     let port_line = if port == "auto" {
-        "# port = 9009  # auto-assigned on startup".to_string()
+        "port = 0  # auto-assigned on startup".to_string()
     } else {
         format!("port = {port}")
     };
@@ -873,6 +903,13 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = Config::load(&Config::default_path())?;
 
+    // Auto-assign port if set to 0
+    let auto_port = config.port == 0;
+    if auto_port {
+        config.port = find_available_port();
+        config.api_port = config.port + 1;
+    }
+
     // If host is "auto", detect public IP on every startup.
     if config.host == "auto" {
         let output = std::process::Command::new("curl")
@@ -930,14 +967,39 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Wire SessionStore
     let sessions = std::sync::Arc::new(tokio::sync::Mutex::new(SessionStore::new()));
 
+    let listener = if auto_port {
+        let mut port = config.port;
+        loop {
+            let addr = format!("{}:{}", toq_core::constants::DEFAULT_BIND_ADDRESS, port);
+            match server::bind(&addr).await {
+                Ok(l) => {
+                    config.port = port;
+                    config.api_port = port + 1;
+                    break l;
+                }
+                Err(_) => {
+                    port += 2;
+                    if port > 9999 {
+                        return Err("No available port found".into());
+                    }
+                }
+            }
+        }
+    } else {
+        let bind_addr = format!(
+            "{}:{}",
+            toq_core::constants::DEFAULT_BIND_ADDRESS,
+            config.port
+        );
+        server::bind(&bind_addr).await?
+    };
+    register_agent(&config.agent_name, config.port, &dirs_path())?;
+
     let bind_addr = format!(
         "{}:{}",
         toq_core::constants::DEFAULT_BIND_ADDRESS,
         config.port
     );
-    let listener = server::bind(&bind_addr).await?;
-    register_agent(&config.agent_name, config.port, &dirs_path())?;
-
     tracing::info!("toq up on {}", address);
     println!("toq up on {address}");
     println!("  public key: {}", keypair.public_key());
