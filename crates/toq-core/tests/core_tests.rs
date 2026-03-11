@@ -2527,6 +2527,29 @@ fn config_default_path() {
     assert!(path.ends_with(".toq/config.toml"));
 }
 
+#[test]
+fn dirs_path_env_override() {
+    use toq_core::config::dirs_path;
+    use toq_core::constants::TOQ_CONFIG_DIR_ENV;
+
+    let dir = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var(TOQ_CONFIG_DIR_ENV, dir.path()) };
+    let result = dirs_path();
+    unsafe { std::env::remove_var(TOQ_CONFIG_DIR_ENV) };
+    assert_eq!(result, dir.path());
+}
+
+#[test]
+fn dirs_path_falls_back_to_home() {
+    use toq_core::config::dirs_path;
+    use toq_core::constants::TOQ_CONFIG_DIR_ENV;
+
+    // Ensure env var is not set
+    unsafe { std::env::remove_var(TOQ_CONFIG_DIR_ENV) };
+    let path = dirs_path();
+    assert!(path.ends_with(".toq"));
+}
+
 // --- Handler filter matching ---
 
 #[test]

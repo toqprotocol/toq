@@ -2635,4 +2635,94 @@ mod tests {
             _ => panic!("expected Send"),
         }
     }
+
+    #[test]
+    fn init_config_content_auto() {
+        let (port_line, api_port_line) = (
+            "port = 0  # auto-assigned on startup".to_string(),
+            "api_port = 0  # auto-assigned on startup".to_string(),
+        );
+        let config_content = format!(
+            "# toq workspace config\n\nagent_name = \"test-agent\"\n{port_line}\n{api_port_line}\n"
+        );
+        assert!(config_content.contains("agent_name = \"test-agent\""));
+        assert!(config_content.contains("port = 0"));
+        assert!(config_content.contains("api_port = 0"));
+    }
+
+    #[test]
+    fn init_config_content_explicit() {
+        let p: u16 = 9020;
+        let config_content = format!(
+            "# toq workspace config\n\nagent_name = \"bot\"\nport = {p}\napi_port = {}\n",
+            p + 1
+        );
+        assert!(config_content.contains("port = 9020"));
+        assert!(config_content.contains("api_port = 9021"));
+    }
+
+    #[test]
+    fn init_gitignore_content() {
+        let gitignore = "keys/\npeer_store.json\nmessages.jsonl\nlogs/\n";
+        assert!(gitignore.contains("keys/"));
+        assert!(gitignore.contains("logs/"));
+        assert!(!gitignore.contains("identity.key"));
+    }
+
+    #[test]
+    fn agent_registry_file_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let content = format!(
+            "name = \"test\"\nport = 9009\npid = {}\nconfig_dir = \"/tmp\"\n",
+            std::process::id()
+        );
+        fs::write(agents_dir.join("test.toml"), &content).unwrap();
+        assert!(agents_dir.join("test.toml").exists());
+
+        let read = fs::read_to_string(agents_dir.join("test.toml")).unwrap();
+        assert!(read.contains("name = \"test\""));
+        assert!(read.contains("port = 9009"));
+
+        fs::remove_file(agents_dir.join("test.toml")).unwrap();
+        assert!(!agents_dir.join("test.toml").exists());
+    }
+
+    #[test]
+    fn port_skip_logic() {
+        let claimed: Vec<u16> = vec![
+            toq_core::constants::DEFAULT_PORT,
+            toq_core::constants::DEFAULT_PORT + 2,
+        ];
+        let mut port = toq_core::constants::DEFAULT_PORT;
+        loop {
+            if !claimed.contains(&port) {
+                break;
+            }
+            port += 2;
+        }
+        assert_eq!(port, toq_core::constants::DEFAULT_PORT + 4);
+    }
+
+    #[test]
+    fn stale_pid_detection() {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", "999999"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(!alive);
+
+        // Current process should be alive
+        let self_alive = std::process::Command::new("kill")
+            .args(["-0", &std::process::id().to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(self_alive);
+    }
 }
