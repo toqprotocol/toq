@@ -554,21 +554,26 @@ fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(toq_dir.join(LOGS_DIR))?;
 
     // Write config.toml
-    let port_line = if port == "auto" {
-        "port = 0  # auto-assigned on startup".to_string()
+    let (port_line, api_port_line) = if port == "auto" {
+        (
+            "port = 0  # auto-assigned on startup".to_string(),
+            "api_port = 0  # auto-assigned on startup".to_string(),
+        )
     } else {
-        format!("port = {port}")
+        let p: u16 = port.parse().unwrap_or(toq_core::constants::DEFAULT_PORT);
+        (format!("port = {p}"), format!("api_port = {}", p + 1))
     };
     let config_content = format!(
         "# toq workspace config\n\
          \n\
          agent_name = \"{name}\"\n\
-         {port_line}\n"
+         {port_line}\n\
+         {api_port_line}\n"
     );
     fs::write(toq_dir.join("config.toml"), config_content)?;
 
     // Write .gitignore
-    let gitignore = "identity.key\npeer_store.json\nmessages.jsonl\nlogs/\n";
+    let gitignore = "keys/\npeer_store.json\nmessages.jsonl\nlogs/\n";
     fs::write(toq_dir.join(".gitignore"), gitignore)?;
 
     // Write empty handlers.toml
@@ -876,7 +881,19 @@ fn run_setup(
 }
 
 async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
-    require_setup();
+    // For workspaces: auto-generate keys if config exists but keys don't
+    let config_exists = Config::default_path().exists();
+    let keys_exist = keystore::identity_key_path().exists();
+    if config_exists && !keys_exist {
+        let keypair = Keypair::generate();
+        keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
+        keystore::generate_and_save_tls_cert(
+            &keystore::tls_cert_path(),
+            &keystore::tls_key_path(),
+        )?;
+    } else {
+        require_setup();
+    }
     clean_stale_agents();
 
     // Daemon mode: re-exec in background
@@ -907,6 +924,8 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let auto_port = config.port == 0;
     if auto_port {
         config.port = find_available_port();
+        config.api_port = config.port + 1;
+    } else if config.api_port == 0 {
         config.api_port = config.port + 1;
     }
 
