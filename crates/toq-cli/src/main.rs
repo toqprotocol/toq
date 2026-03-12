@@ -116,6 +116,9 @@ enum Commands {
         /// Graceful shutdown: wait for active threads to finish.
         #[arg(long)]
         graceful: bool,
+        /// Stop a specific named agent (from anywhere).
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Show running state, connections, and pending approvals.
     Status,
@@ -286,7 +289,7 @@ async fn main() {
             framework,
         ),
         Commands::Up { foreground } => run_up(foreground).await,
-        Commands::Down { graceful } => run_down(graceful),
+        Commands::Down { graceful, name } => run_down(graceful, name.as_deref()),
         Commands::Status => run_status(),
         Commands::Peers => run_peers(),
         Commands::Block {
@@ -1316,7 +1319,36 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_down(graceful: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    // If --name is given, look up the agent in the registry
+    if let Some(agent_name) = name {
+        let agent_file = agents_registry_dir().join(format!("{agent_name}.toml"));
+        if !agent_file.exists() {
+            return Err(format!("No agent named '{agent_name}' found").into());
+        }
+        let contents = fs::read_to_string(&agent_file)?;
+        let pid: u32 = contents
+            .lines()
+            .find(|l| l.starts_with("pid"))
+            .and_then(|l| l.split('=').nth(1))
+            .and_then(|v| v.trim().parse().ok())
+            .ok_or("Could not read PID from agent registry")?;
+
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status()?;
+            if status.success() {
+                println!("toq down '{agent_name}' (PID {pid})");
+                let _ = fs::remove_file(&agent_file);
+            } else {
+                eprintln!("Failed to stop PID {pid}");
+            }
+        }
+        return Ok(());
+    }
+
     match read_pid() {
         Some(pid) => {
             #[cfg(unix)]
