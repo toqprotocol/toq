@@ -2822,3 +2822,40 @@ fn handlers_file_get_and_enable_disable() {
     assert!(!file.get("h1").unwrap().enabled);
     assert!(file.get("nonexistent").is_none());
 }
+
+// --- Same-host detection ---
+
+#[test]
+fn same_host_identical_strings() {
+    assert!(toq_core::transport::is_same_host("1.2.3.4", "1.2.3.4"));
+}
+
+#[test]
+fn same_host_localhost() {
+    assert!(toq_core::transport::is_same_host("localhost", "anything"));
+    assert!(toq_core::transport::is_same_host("127.0.0.1", "anything"));
+    assert!(toq_core::transport::is_same_host("::1", "anything"));
+}
+
+#[test]
+fn same_host_different() {
+    assert!(!toq_core::transport::is_same_host("1.2.3.4", "5.6.7.8"));
+}
+
+#[test]
+fn resolve_connect_addr_local() {
+    let addr = toq_core::transport::resolve_connect_addr("1.2.3.4", 9009, "1.2.3.4");
+    assert_eq!(addr, "127.0.0.1:9009");
+}
+
+#[test]
+fn resolve_connect_addr_remote() {
+    let addr = toq_core::transport::resolve_connect_addr("5.6.7.8", 9011, "1.2.3.4");
+    assert_eq!(addr, "5.6.7.8:9011");
+}
+
+#[test]
+fn resolve_connect_addr_localhost_passthrough() {
+    let addr = toq_core::transport::resolve_connect_addr("localhost", 9009, "anything");
+    assert_eq!(addr, "127.0.0.1:9009");
+}

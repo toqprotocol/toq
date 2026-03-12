@@ -120,3 +120,36 @@ pub async fn tls_connect(
         .await
         .map_err(|e| Error::Io(e.to_string()))
 }
+
+/// Check if a target host resolves to the same machine as the local host.
+pub fn is_same_host(target_host: &str, local_host: &str) -> bool {
+    if target_host == local_host
+        || target_host == "localhost"
+        || target_host == "127.0.0.1"
+        || target_host == "::1"
+    {
+        return true;
+    }
+
+    use std::net::ToSocketAddrs;
+    let resolve = |host: &str| -> Vec<std::net::IpAddr> {
+        format!("{host}:0")
+            .to_socket_addrs()
+            .map(|addrs| addrs.map(|a| a.ip()).collect())
+            .unwrap_or_default()
+    };
+
+    let target_ips = resolve(target_host);
+    let local_ips = resolve(local_host);
+    target_ips.iter().any(|t| local_ips.contains(t))
+}
+
+/// Resolve a connection address, routing locally if the target is on this machine.
+pub fn resolve_connect_addr(target_host: &str, target_port: u16, local_host: &str) -> String {
+    let host = if is_same_host(target_host, local_host) {
+        "127.0.0.1"
+    } else {
+        target_host
+    };
+    format!("{host}:{target_port}")
+}

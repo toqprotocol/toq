@@ -1966,7 +1966,11 @@ async fn run_send(
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
-    let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
+    let connect_addr = toq_core::transport::resolve_connect_addr(
+        &target_addr.host,
+        target_addr.port,
+        &config.host,
+    );
     println!("Connecting to {target_addr}...");
 
     let (info, mut stream) =

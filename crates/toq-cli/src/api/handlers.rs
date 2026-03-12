@@ -175,6 +175,7 @@ pub async fn send_message(
         let card = local_card.clone();
         let feats = features.clone();
         let state2 = state.clone();
+        let local_host = state.address.host.clone();
         let tid = if has_explicit_thread {
             thread_id.clone()
         } else {
@@ -186,7 +187,8 @@ pub async fn send_message(
         let mt = msg_type.clone();
         handles.push(tokio::spawn(async move {
             let addr_str = target.to_string();
-            let connect_addr = format!("{}:{}", target.host, target.port);
+            let connect_addr =
+                toq_core::transport::resolve_connect_addr(&target.host, target.port, &local_host);
             let conn =
                 server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats).await;
             let (info, mut stream) = match conn {
@@ -319,7 +321,11 @@ async fn send_to_single(
     p: SingleSendParams,
     params: &SendMessageParams,
 ) -> Response {
-    let connect_addr = format!("{}:{}", p.target_addr.host, p.target_addr.port);
+    let connect_addr = toq_core::transport::resolve_connect_addr(
+        &p.target_addr.host,
+        p.target_addr.port,
+        &state.address.host,
+    );
     let connect_result =
         server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features).await;
 
@@ -506,10 +512,12 @@ pub async fn stream_start(
         max_message_size: Some(config.max_message_size),
         connection_mode: Some(config.connection_mode.clone()),
     };
+    let local_host = config.host.clone();
     drop(config);
 
     let features = toq_core::negotiation::Features::default();
-    let connect_addr = format!("{}:{}", target_addr.host, target_addr.port);
+    let connect_addr =
+        toq_core::transport::resolve_connect_addr(&target_addr.host, target_addr.port, &local_host);
 
     let connect_result = server::connect_to_peer(
         &connect_addr,
@@ -950,7 +958,8 @@ pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody
     };
     drop(config);
 
-    let connect_addr = format!("{}:{}", target.host, target.port);
+    let connect_addr =
+        toq_core::transport::resolve_connect_addr(&target.host, target.port, &address.host);
     match server::ping_peer(&connect_addr, &keypair, &address).await {
         Ok(result) => json_ok(serde_json::json!({
             "agent_name": result.peer_address.agent_name,
