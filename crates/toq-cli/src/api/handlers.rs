@@ -196,6 +196,9 @@ pub async fn send_message(
                 Err(e) => {
                     let msg = match &e {
                         toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                        toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
+                            format!("No agent running at {}", addr_str)
+                        }
                         _ => format!("Cannot reach target: {e}"),
                     };
                     return MultiSendResult {
@@ -338,6 +341,9 @@ async fn send_to_single(
         Err(e) => {
             let msg = match &e {
                 toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
+                    format!("No agent running at {}", p.target_addr)
+                }
                 _ => format!("Cannot reach target: {e}"),
             };
             return error_response(StatusCode::BAD_GATEWAY, ERR_NOT_REACHABLE, msg);
@@ -537,6 +543,9 @@ pub async fn stream_start(
         Err(e) => {
             let msg = match &e {
                 toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
+                    "No agent running at target address".to_string()
+                }
                 _ => format!("Cannot reach target: {e}"),
             };
             return error_response(StatusCode::BAD_GATEWAY, ERR_NOT_REACHABLE, msg);

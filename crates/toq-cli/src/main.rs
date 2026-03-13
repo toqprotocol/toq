@@ -46,14 +46,6 @@ fn use_color() -> bool {
     std::env::var("NO_COLOR").is_err() && io::stdout().is_terminal()
 }
 
-fn orange(s: &str) -> String {
-    if use_color() {
-        format!("\x1b[38;2;229;124;4m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
-}
-
 fn gold(s: &str) -> String {
     if use_color() {
         format!("\x1b[38;2;250;163;0m{s}\x1b[0m")
@@ -980,7 +972,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         let config = Config::load(&Config::default_path())?;
         println!(
             "{}",
-            orange(&format!("toq started as daemon (PID {})", child.id()))
+            gold(&format!("toq started as daemon (PID {})", child.id()))
         );
         println!("  agent:           {}", config.agent_name);
         println!(
@@ -2142,10 +2134,7 @@ async fn run_send(
         let resp_body: serde_json::Value = resp.json().await?;
         if let Some(status) = resp_body["status"].as_str() {
             let id = resp_body["id"].as_str().unwrap_or("unknown");
-            println!(
-                "{}",
-                orange(&format!("Sent message {id} (status: {status})"))
-            );
+            println!("{}", gold(&format!("Sent message {id} (status: {status})")));
         } else if let Some(err) = resp_body["error"]["message"].as_str() {
             eprintln!("Send failed: {err}");
         } else {
