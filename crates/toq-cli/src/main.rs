@@ -2797,10 +2797,18 @@ async fn run_handler(action: HandlerAction) -> Result<(), Box<dyn std::error::Er
                 std::collections::HashMap::new()
             };
 
-            println!("{:<20} {:<8} {:<8} FILTER", "NAME", "ENABLED", "ACTIVE");
+            println!(
+                "{:<20} {:<8} {:<8} {:<16} FILTER",
+                "NAME", "ENABLED", "ACTIVE", "TYPE"
+            );
             for h in &file.handlers {
                 let active = active_counts.get(&h.name).copied().unwrap_or(0);
                 let enabled = if h.enabled { "yes" } else { "no" };
+                let type_str = if h.is_llm() {
+                    format!("{}/{}", h.provider, h.model)
+                } else {
+                    "command".to_string()
+                };
                 let mut filters = Vec::new();
                 if !h.filter_from.is_empty() {
                     filters.push(format!("from: {}", h.filter_from.join(", ")));
@@ -2816,7 +2824,10 @@ async fn run_handler(action: HandlerAction) -> Result<(), Box<dyn std::error::Er
                 } else {
                     filters.join("; ")
                 };
-                println!("{:<20} {:<8} {:<8} {}", h.name, enabled, active, filter_str);
+                println!(
+                    "{:<20} {:<8} {:<8} {:<16} {}",
+                    h.name, enabled, active, type_str, filter_str
+                );
             }
         }
         HandlerAction::Remove { name } => {

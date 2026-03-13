@@ -250,6 +250,8 @@ impl HandlerManager {
             .map(|h| HandlerStatus {
                 name: h.name.clone(),
                 command: h.command.clone(),
+                provider: h.provider.clone(),
+                model: h.model.clone(),
                 enabled: h.enabled,
                 active: self.active.get(&h.name).map_or(0, |v| v.len()),
                 filter_from: h.filter_from.clone(),
@@ -264,6 +266,8 @@ impl HandlerManager {
 pub struct HandlerStatus {
     pub name: String,
     pub command: String,
+    pub provider: String,
+    pub model: String,
     pub enabled: bool,
     pub active: usize,
     pub filter_from: Vec<String>,

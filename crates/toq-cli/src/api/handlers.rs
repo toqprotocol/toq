@@ -1718,6 +1718,8 @@ pub async fn list_handlers(State(state): State<ApiState>) -> impl IntoResponse {
             serde_json::json!({
                 "name": h.name,
                 "command": h.command,
+                "provider": h.provider,
+                "model": h.model,
                 "enabled": h.enabled,
                 "active": h.active,
                 "filter_from": h.filter_from,
@@ -1739,16 +1741,21 @@ pub async fn add_handler(
             return error_response(StatusCode::BAD_REQUEST, ERR_INVALID_REQUEST, "missing name");
         }
     };
-    let command = match body["command"].as_str() {
-        Some(c) => c.to_string(),
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_REQUEST,
-                "missing command",
-            );
-        }
-    };
+    let command = body["command"].as_str().unwrap_or("").to_string();
+    let provider = body["provider"].as_str().unwrap_or("").to_string();
+    let model = body["model"].as_str().unwrap_or("").to_string();
+    let prompt = body["prompt"].as_str().map(String::from);
+    let prompt_file = body["prompt_file"].as_str().map(String::from);
+    let max_turns = body["max_turns"].as_u64().map(|n| n as usize);
+    let auto_close = body["auto_close"].as_bool().unwrap_or(false);
+
+    if command.is_empty() && provider.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_REQUEST,
+            "specify command or provider",
+        );
+    }
     let filter_from = json_string_array(&body, "filter_from");
     let filter_key = json_string_array(&body, "filter_key");
     let filter_type = json_string_array(&body, "filter_type");
@@ -1756,12 +1763,12 @@ pub async fn add_handler(
     let entry = toq_core::config::HandlerEntry {
         name: name.clone(),
         command,
-        provider: String::new(),
-        model: String::new(),
-        prompt: None,
-        prompt_file: None,
-        max_turns: None,
-        auto_close: false,
+        provider,
+        model,
+        prompt,
+        prompt_file,
+        max_turns,
+        auto_close,
         enabled: true,
         filter_from,
         filter_key,

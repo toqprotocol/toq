@@ -113,13 +113,15 @@ impl LlmHandler {
                     let close = resp.close_thread || is_last_turn;
 
                     // Update thread history
-                    if !safe_text.is_empty() {
+                    {
                         let mut guard = threads.lock().await;
                         if let Some((history, count)) = guard.get_mut(&thread_id) {
-                            history.push(ChatMessage {
-                                role: "assistant".into(),
-                                content: safe_text.clone(),
-                            });
+                            if !safe_text.is_empty() {
+                                history.push(ChatMessage {
+                                    role: "assistant".into(),
+                                    content: safe_text.clone(),
+                                });
+                            }
                             if close {
                                 *count = usize::MAX;
                             }
