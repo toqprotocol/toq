@@ -2859,3 +2859,100 @@ fn resolve_connect_addr_localhost_passthrough() {
     let addr = toq_core::transport::resolve_connect_addr("localhost", 9009, "anything");
     assert_eq!(addr, "127.0.0.1:9009");
 }
+
+#[tokio::test]
+async fn approval_rejected_through_negotiation() {
+    // Verify that a client connecting to an approval-mode server gets
+    // Error::ConnectionRejected (not a broken pipe) when not approved.
+    use toq_core::crypto::Keypair;
+    use toq_core::negotiation::Features;
+    use toq_core::policy::{ConnectionMode, PolicyEngine};
+    use toq_core::server;
+    use toq_core::transport;
+    use toq_core::types::Address;
+
+    let server_kp = Keypair::generate();
+    let client_kp = Keypair::generate();
+
+    let (certs, key) = toq_core::transport::generate_self_signed_cert().unwrap();
+    let tls_config = transport::server_config(certs.clone(), key.clone_key()).unwrap();
+    let tls_acceptor = transport::tls_acceptor(tls_config);
+
+    let server_addr = Address::new("localhost", "server").unwrap();
+    let client_addr = Address::new("localhost", "client").unwrap();
+
+    let server_card = toq_core::card::AgentCard {
+        name: "server".into(),
+        description: None,
+        public_key: server_kp.public_key().to_encoded(),
+        protocol_version: "0.1".into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: Some("approval".into()),
+    };
+    let client_card = toq_core::card::AgentCard {
+        name: "client".into(),
+        description: None,
+        public_key: client_kp.public_key().to_encoded(),
+        protocol_version: "0.1".into(),
+        capabilities: vec![],
+        accept_files: false,
+        max_file_size: None,
+        max_message_size: None,
+        connection_mode: Some("approval".into()),
+    };
+    let features = Features::default();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = tokio::spawn({
+        let server_kp = server_kp.clone();
+        let server_addr = server_addr.clone();
+        let server_card = server_card.clone();
+        let features = features.clone();
+        async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut engine = PolicyEngine::new(ConnectionMode::Approval);
+            let result = server::accept_connection(
+                tcp,
+                &tls_acceptor,
+                &server_kp,
+                &server_addr,
+                &server_card,
+                &features,
+                Some(&mut engine),
+            )
+            .await;
+            // Server should reject with ConnectionRejected
+            assert!(result.is_err());
+            // Verify the pending request was recorded
+            assert_eq!(engine.pending_count(), 1);
+        }
+    });
+
+    let connect_addr = format!("127.0.0.1:{port}");
+    let result = server::connect_to_peer(
+        &connect_addr,
+        &client_kp,
+        &client_addr,
+        &client_card,
+        &features,
+    )
+    .await;
+
+    match result {
+        Err(toq_core::error::Error::ConnectionRejected(msg)) => {
+            assert!(
+                msg.contains("pending approval"),
+                "Expected 'pending approval' in message, got: {msg}"
+            );
+        }
+        Err(e) => panic!("Expected ConnectionRejected, got: {e:?}"),
+        Ok(_) => panic!("Expected error, got success"),
+    }
+
+    server_handle.await.unwrap();
+}

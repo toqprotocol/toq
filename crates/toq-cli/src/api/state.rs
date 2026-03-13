@@ -41,14 +41,16 @@ struct ActiveProcess {
 pub struct HandlerManager {
     handlers: toq_core::config::HandlersFile,
     active: std::collections::HashMap<String, Vec<ActiveProcess>>,
+    api_url: String,
 }
 
 impl HandlerManager {
-    pub fn new(handlers: toq_core::config::HandlersFile) -> Self {
+    pub fn new(handlers: toq_core::config::HandlersFile, api_url: String) -> Self {
         let _ = std::fs::create_dir_all(handler_log_dir());
         Self {
             handlers,
             active: std::collections::HashMap::new(),
+            api_url,
         }
     }
 
@@ -103,6 +105,7 @@ impl HandlerManager {
         let msg_type = msg.msg_type.clone();
         let msg_id = msg.id.clone();
         let log_dir = handler_log_dir();
+        let api_url = self.api_url.clone();
 
         // Shared slot for the child PID so the outer scope can read it.
         let child_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -118,6 +121,7 @@ impl HandlerManager {
                 .env("TOQ_TYPE", &msg_type)
                 .env("TOQ_ID", &msg_id)
                 .env("TOQ_HANDLER", &name)
+                .env("TOQ_API_URL", &api_url)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -380,6 +384,7 @@ impl ApiState {
             .config
             .message_history_limit
             .unwrap_or(DEFAULT_HISTORY_LIMIT);
+        let api_url = format!("http://127.0.0.1:{}", p.config.api_port);
         let history = MessageHistory::load_from_file(limit);
         let handlers =
             toq_core::config::HandlersFile::load(&toq_core::config::HandlersFile::path())
@@ -398,7 +403,7 @@ impl ApiState {
             sessions: p.sessions,
             active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             history: Arc::new(Mutex::new(history)),
-            handler_manager: Arc::new(Mutex::new(HandlerManager::new(handlers))),
+            handler_manager: Arc::new(Mutex::new(HandlerManager::new(handlers, api_url))),
         }
     }
 }
@@ -495,5 +500,12 @@ mod tests {
         }
         let msgs = h.query(2, None, None);
         assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn handler_manager_stores_api_url() {
+        let handlers = toq_core::config::HandlersFile::default();
+        let mgr = HandlerManager::new(handlers, "http://127.0.0.1:9010".into());
+        assert_eq!(mgr.api_url, "http://127.0.0.1:9010");
     }
 }

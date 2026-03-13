@@ -1927,3 +1927,15 @@ async fn api_handler_reload() {
 
     inst.stop();
 }
+
+#[test]
+fn whoami_shows_agent_info() {
+    let inst = Instance::new("whoami-test", "approval", 19810, 19809);
+    inst.cmd()
+        .arg("whoami")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("whoami-test"))
+        .stdout(predicates::str::contains("approval"))
+        .stdout(predicates::str::contains("ed25519:"));
+}
