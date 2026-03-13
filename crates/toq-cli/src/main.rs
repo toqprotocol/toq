@@ -203,6 +203,8 @@ enum Commands {
     Permissions,
     /// Ping a remote agent to discover its public key.
     Ping { address: String },
+    /// Show your agent's address, public key, and connection mode.
+    Whoami,
     /// List all registered agents on this machine.
     Agents,
     /// Update the toq binary.
@@ -331,6 +333,7 @@ async fn main() {
         Commands::Doctor => run_doctor().await,
         Commands::Permissions => run_permissions().await,
         Commands::Ping { ref address } => run_ping(address).await,
+        Commands::Whoami => run_whoami(),
         Commands::Agents => run_agents(),
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
@@ -1416,6 +1419,22 @@ fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+fn run_whoami() -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+    let config = Config::load(&Config::default_path())?;
+    let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
+    let pub_key = keypair.public_key().to_encoded();
+    println!("agent:           {}", config.agent_name);
+    println!(
+        "address:         toq://{}/{}",
+        config.host, config.agent_name
+    );
+    println!("public key:      {pub_key}");
+    println!("connection mode: {}", config.connection_mode);
+    println!("port:            {}", config.port);
+    Ok(())
+}
+
 fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     let sp = state_path();
     if !sp.exists() {
@@ -1774,16 +1793,74 @@ async fn run_approve(
         return Ok(());
     }
 
-    // Legacy: approve a pending request by ID
-    let id = id.ok_or("Specify --from, --key, or a pending request ID")?;
-    let url = format!("{}/v1/approvals/{}", base, urlencode_path(id));
+    // Fetch pending approvals
+    let list_url = format!("{}/v1/approvals", base);
+    let list_resp: serde_json::Value = reqwest::get(&list_url).await?.json().await?;
+    let approvals = list_resp["approvals"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if approvals.is_empty() {
+        println!("No pending approvals");
+        return Ok(());
+    }
+
+    // Resolve which approval to act on
+    let resolved_key = if let Some(raw_id) = id {
+        if raw_id.starts_with("ed25519:") {
+            raw_id.to_string()
+        } else if let Ok(idx) = raw_id.parse::<usize>() {
+            if idx == 0 || idx > approvals.len() {
+                return Err(format!("Invalid index {idx}. Use 1-{}", approvals.len()).into());
+            }
+            approvals[idx - 1]["public_key"]
+                .as_str()
+                .ok_or("missing key")?
+                .to_string()
+        } else {
+            // Match by agent name in address
+            approvals
+                .iter()
+                .find(|a| {
+                    a["address"]
+                        .as_str()
+                        .is_some_and(|addr| addr.ends_with(&format!("/{raw_id}")))
+                })
+                .and_then(|a| a["public_key"].as_str())
+                .ok_or_else(|| format!("No pending approval from '{raw_id}'"))?
+                .to_string()
+        }
+    } else {
+        // Interactive selector
+        let options: Vec<String> = approvals
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let addr = a["address"].as_str().unwrap_or("unknown");
+                let key = a["public_key"].as_str().unwrap_or("");
+                let short_key = key.get(..20).unwrap_or(key);
+                format!("{}. {} ({}...)", i + 1, addr, short_key)
+            })
+            .collect();
+        let choice = inquire::Select::new("Select agent to approve:", options).prompt()?;
+        let idx: usize = choice.split('.').next().unwrap_or("0").parse().unwrap_or(0);
+        if idx == 0 || idx > approvals.len() {
+            return Err("Invalid selection".into());
+        }
+        approvals[idx - 1]["public_key"]
+            .as_str()
+            .ok_or("missing key")?
+            .to_string()
+    };
+
+    let url = format!("{}/v1/approvals/{}", base, urlencode_path(&resolved_key));
     let resp = reqwest::Client::new()
         .post(&url)
         .json(&serde_json::json!({"decision": "approve"}))
         .send()
         .await?;
     if resp.status().is_success() {
-        println!("Approved {id}");
+        println!("Approved {resolved_key}");
     } else {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
