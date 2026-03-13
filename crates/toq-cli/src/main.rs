@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use toq_core::adapter::AgentMessage;
 
 mod api;
+mod llm;
 use toq_core::card::AgentCard;
 use toq_core::config::{Config, dirs_path};
 use toq_core::constants::{
@@ -311,25 +312,46 @@ enum ConfigAction {
     },
 }
 
+#[derive(Parser)]
+struct HandlerAddArgs {
+    /// Handler name.
+    name: String,
+    /// Shell command (for command handlers).
+    #[arg(long)]
+    command: Option<String>,
+    /// LLM provider: openai, anthropic, or bedrock.
+    #[arg(long)]
+    provider: Option<String>,
+    /// LLM model name.
+    #[arg(long)]
+    model: Option<String>,
+    /// System prompt.
+    #[arg(long)]
+    prompt: Option<String>,
+    /// Path to system prompt file.
+    #[arg(long)]
+    prompt_file: Option<String>,
+    /// Max turns before closing the thread.
+    #[arg(long)]
+    max_turns: Option<usize>,
+    /// Let the LLM decide when to close the thread.
+    #[arg(long)]
+    auto_close: bool,
+    /// Filter by sender address/wildcard (repeatable, OR logic).
+    #[arg(long = "from")]
+    filter_from: Vec<String>,
+    /// Filter by sender public key (repeatable, OR logic).
+    #[arg(long = "key")]
+    filter_key: Vec<String>,
+    /// Filter by message type (repeatable, OR logic).
+    #[arg(long = "type")]
+    filter_type: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum HandlerAction {
     /// Register a new message handler.
-    Add {
-        /// Handler name.
-        name: String,
-        /// Shell command to execute.
-        #[arg(long)]
-        command: String,
-        /// Filter by sender address/wildcard (repeatable, OR logic).
-        #[arg(long = "from")]
-        filter_from: Vec<String>,
-        /// Filter by sender public key (repeatable, OR logic).
-        #[arg(long = "key")]
-        filter_key: Vec<String>,
-        /// Filter by message type (repeatable, OR logic).
-        #[arg(long = "type")]
-        filter_type: Vec<String>,
-    },
+    Add(Box<HandlerAddArgs>),
     /// List registered handlers.
     List,
     /// Remove a handler.
@@ -2689,17 +2711,48 @@ async fn run_handler(action: HandlerAction) -> Result<(), Box<dyn std::error::Er
     }
 
     match action {
-        HandlerAction::Add {
-            name,
-            command,
-            filter_from,
-            filter_key,
-            filter_type,
-        } => {
+        HandlerAction::Add(args) => {
+            let HandlerAddArgs {
+                name,
+                command,
+                provider,
+                model,
+                prompt,
+                prompt_file,
+                max_turns,
+                auto_close,
+                filter_from,
+                filter_key,
+                filter_type,
+            } = *args;
+            // Validate: must have either --command or --provider
+            if command.is_none() && provider.is_none() {
+                return Err(
+                    "specify --command for a shell handler or --provider for an LLM handler".into(),
+                );
+            }
+            if command.is_some() && provider.is_some() {
+                return Err("cannot use both --command and --provider".into());
+            }
+            if let Some(ref p) = provider {
+                if !["openai", "anthropic", "bedrock"].contains(&p.as_str()) {
+                    return Err("provider must be openai, anthropic, or bedrock".into());
+                }
+                if model.is_none() {
+                    return Err("--model is required for LLM handlers".into());
+                }
+            }
+
             let mut file = toq_core::config::HandlersFile::load(&path).unwrap_or_default();
             let entry = toq_core::config::HandlerEntry {
                 name: name.clone(),
-                command,
+                command: command.unwrap_or_default(),
+                provider: provider.unwrap_or_default(),
+                model: model.unwrap_or_default(),
+                prompt,
+                prompt_file,
+                max_turns,
+                auto_close,
                 enabled: true,
                 filter_from,
                 filter_key,

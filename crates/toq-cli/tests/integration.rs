@@ -1984,3 +1984,79 @@ fn config_set_unknown_key() {
         .assert()
         .failure();
 }
+
+#[test]
+fn handler_add_llm_requires_model() {
+    let inst = Instance::new("llm-nomodel", "approval", 19820, 19819);
+    inst.cmd()
+        .args(["handler", "add", "chat", "--provider", "openai"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--model is required"));
+}
+
+#[test]
+fn handler_add_rejects_both_command_and_provider() {
+    let inst = Instance::new("llm-both", "approval", 19822, 19821);
+    inst.cmd()
+        .args([
+            "handler",
+            "add",
+            "chat",
+            "--command",
+            "echo hi",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-4o",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot use both"));
+}
+
+#[test]
+fn handler_add_rejects_invalid_provider() {
+    let inst = Instance::new("llm-badprov", "approval", 19824, 19823);
+    inst.cmd()
+        .args([
+            "handler",
+            "add",
+            "chat",
+            "--provider",
+            "google",
+            "--model",
+            "gemini",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "must be openai, anthropic, or bedrock",
+        ));
+}
+
+#[test]
+fn handler_add_llm_succeeds() {
+    let inst = Instance::new("llm-ok", "approval", 19826, 19825);
+    inst.cmd()
+        .args([
+            "handler",
+            "add",
+            "chat",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-4o",
+            "--prompt",
+            "You are helpful",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Added handler 'chat'"));
+    // Verify it's in the list
+    inst.cmd()
+        .args(["handler", "list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("chat"));
+}

@@ -1756,6 +1756,12 @@ pub async fn add_handler(
     let entry = toq_core::config::HandlerEntry {
         name: name.clone(),
         command,
+        provider: String::new(),
+        model: String::new(),
+        prompt: None,
+        prompt_file: None,
+        max_turns: None,
+        auto_close: false,
         enabled: true,
         filter_from,
         filter_key,

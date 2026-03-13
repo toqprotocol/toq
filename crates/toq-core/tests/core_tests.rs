@@ -2564,6 +2564,7 @@ fn handler_matches_no_filters() {
         filter_from: vec![],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2585,6 +2586,7 @@ fn handler_disabled_never_matches() {
         filter_from: vec![],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     };
     assert!(!matches_handler(
         &h,
@@ -2606,6 +2608,7 @@ fn handler_matches_from_wildcard() {
         filter_from: vec!["toq://1.2.3.4/*".into()],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2633,6 +2636,7 @@ fn handler_matches_from_or_logic() {
         filter_from: vec!["toq://abc.com/*".into(), "toq://def.com/*".into()],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2666,6 +2670,7 @@ fn handler_matches_type_filter() {
         filter_from: vec![],
         filter_key: vec![],
         filter_type: vec!["message.send".into()],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2695,6 +2700,7 @@ fn handler_matches_key_filter() {
         filter_from: vec![],
         filter_key: vec![kp.public_key().to_encoded()],
         filter_type: vec![],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2725,6 +2731,7 @@ fn handler_matches_cross_type_and() {
         filter_from: vec!["toq://abc.com/*".into()],
         filter_key: vec![],
         filter_type: vec!["message.send".into()],
+        ..Default::default()
     };
     assert!(matches_handler(
         &h,
@@ -2760,6 +2767,7 @@ fn handlers_file_add_remove() {
         filter_from: vec![],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     };
     file.add(entry.clone()).unwrap();
     assert_eq!(file.handlers.len(), 1);
@@ -2788,6 +2796,7 @@ fn handlers_file_save_and_load() {
         filter_from: vec!["toq://host/*".into()],
         filter_key: vec![],
         filter_type: vec!["message.send".into()],
+        ..Default::default()
     })
     .unwrap();
     file.save(&path).unwrap();
@@ -2814,6 +2823,7 @@ fn handlers_file_get_and_enable_disable() {
         filter_from: vec![],
         filter_key: vec![],
         filter_type: vec![],
+        ..Default::default()
     })
     .unwrap();
 
@@ -2955,4 +2965,62 @@ async fn approval_rejected_through_negotiation() {
     }
 
     server_handle.await.unwrap();
+}
+
+#[test]
+fn handler_entry_is_llm() {
+    use toq_core::config::HandlerEntry;
+
+    let cmd_handler = HandlerEntry {
+        name: "test".into(),
+        command: "echo hi".into(),
+        ..Default::default()
+    };
+    assert!(!cmd_handler.is_llm());
+
+    let llm_handler = HandlerEntry {
+        name: "chat".into(),
+        provider: "openai".into(),
+        model: "gpt-4o".into(),
+        ..Default::default()
+    };
+    assert!(llm_handler.is_llm());
+}
+
+#[test]
+fn handler_entry_default_enabled() {
+    use toq_core::config::HandlerEntry;
+    let entry = HandlerEntry::default();
+    assert!(entry.enabled);
+    assert!(!entry.is_llm());
+    assert!(entry.command.is_empty());
+}
+
+#[test]
+fn handler_entry_llm_roundtrip() {
+    use toq_core::config::{HandlerEntry, HandlersFile};
+
+    let mut file = HandlersFile::default();
+    file.add(HandlerEntry {
+        name: "chat".into(),
+        provider: "anthropic".into(),
+        model: "claude-sonnet-4-20250514".into(),
+        prompt: Some("You are helpful".into()),
+        max_turns: Some(20),
+        auto_close: true,
+        ..Default::default()
+    })
+    .unwrap();
+
+    let toml = toml::to_string_pretty(&file).unwrap();
+    let loaded: HandlersFile = toml::from_str(&toml).unwrap();
+    let h = &loaded.handlers[0];
+    assert_eq!(h.name, "chat");
+    assert_eq!(h.provider, "anthropic");
+    assert_eq!(h.model, "claude-sonnet-4-20250514");
+    assert_eq!(h.prompt.as_deref(), Some("You are helpful"));
+    assert_eq!(h.max_turns, Some(20));
+    assert!(h.auto_close);
+    assert!(h.enabled);
+    assert!(h.command.is_empty());
 }

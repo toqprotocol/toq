@@ -42,15 +42,18 @@ pub struct HandlerManager {
     handlers: toq_core::config::HandlersFile,
     active: std::collections::HashMap<String, Vec<ActiveProcess>>,
     api_url: String,
+    llm: crate::llm::handler::LlmHandler,
 }
 
 impl HandlerManager {
     pub fn new(handlers: toq_core::config::HandlersFile, api_url: String) -> Self {
         let _ = std::fs::create_dir_all(handler_log_dir());
+        let llm = crate::llm::handler::LlmHandler::new(api_url.clone());
         Self {
             handlers,
             active: std::collections::HashMap::new(),
             api_url,
+            llm,
         }
     }
 
@@ -69,6 +72,14 @@ impl HandlerManager {
         msg: &IncomingMessage,
         from_key: Option<&toq_core::crypto::PublicKey>,
     ) {
+        // Don't respond to thread.close messages
+        if msg.msg_type == "thread.close" {
+            if let Some(tid) = &msg.thread_id {
+                self.llm.on_thread_close(tid);
+            }
+            return;
+        }
+
         let matching: Vec<toq_core::config::HandlerEntry> = self
             .handlers
             .handlers
@@ -78,7 +89,11 @@ impl HandlerManager {
             .collect();
 
         for handler in matching {
-            self.spawn_handler(&handler, msg);
+            if handler.is_llm() {
+                self.llm.dispatch(&handler, msg);
+            } else {
+                self.spawn_handler(&handler, msg);
+            }
         }
     }
 

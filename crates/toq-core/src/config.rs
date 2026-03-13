@@ -226,7 +226,27 @@ impl PermissionsFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandlerEntry {
     pub name: String,
+    /// Shell command (for command handlers)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
+    /// LLM provider: "openai", "anthropic", or "bedrock"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// LLM model name
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// System prompt inline
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Path to system prompt file
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_file: Option<String>,
+    /// Max turns before auto thread.close
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<usize>,
+    /// Let LLM decide when to close via tool call
+    #[serde(default)]
+    pub auto_close: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -235,6 +255,32 @@ pub struct HandlerEntry {
     pub filter_key: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filter_type: Vec<String>,
+}
+
+impl HandlerEntry {
+    /// Returns true if this is an LLM handler (has provider set).
+    pub fn is_llm(&self) -> bool {
+        !self.provider.is_empty()
+    }
+}
+
+impl Default for HandlerEntry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            prompt: None,
+            prompt_file: None,
+            max_turns: None,
+            auto_close: false,
+            enabled: true,
+            filter_from: Vec::new(),
+            filter_key: Vec::new(),
+            filter_type: Vec::new(),
+        }
+    }
 }
 
 fn default_true() -> bool {
