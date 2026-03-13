@@ -91,7 +91,50 @@ fn centered_logo() -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "toq", version, about = ABOUT)]
+#[command(name = "toq", version, about = ABOUT, help_template = "\
+{about}
+
+{usage-heading} {usage}
+
+Getting Started:
+  init         Initialize a workspace
+  setup        Interactive guided setup
+  whoami       Show your agent's address and public key
+
+Daemon:
+  up           Start the toq endpoint
+  down         Stop the toq endpoint
+  status       Show running state and connections
+  agents       List all registered agents on this machine
+
+Messaging:
+  send         Send a message to an agent
+  listen       Listen for incoming messages in real time
+  messages     Show recent received messages
+  peers        List known peers
+  ping         Ping a remote agent
+  handler      Manage message handlers
+
+Security:
+  approvals    List pending approval requests
+  approve      Approve a pending request
+  deny         Deny a pending request
+  revoke       Revoke a previously approved agent
+  block        Block an agent
+  unblock      Remove from the blocklist
+  permissions  List all permission rules
+
+Maintenance:
+  config       View or modify configuration
+  doctor       Run diagnostics
+  logs         Show recent log entries
+  clear-logs   Delete all audit logs
+  export       Export encrypted backup
+  import       Restore from backup
+  rotate-keys  Rotate keys
+  upgrade      Update the toq binary
+
+{options}")]
 struct Cli {
     /// Override config directory (default: .toq/ in cwd, then ~/.toq/)
     #[arg(long, global = true)]
