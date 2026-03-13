@@ -197,7 +197,7 @@ pub async fn send_message(
                     let msg = match &e {
                         toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
                         toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
-                            format!("No agent running at {}", addr_str)
+                            format!("no agent running at {}", addr_str)
                         }
                         _ => format!("Cannot reach target: {e}"),
                     };
@@ -342,7 +342,7 @@ async fn send_to_single(
             let msg = match &e {
                 toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
                 toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
-                    format!("No agent running at {}", p.target_addr)
+                    format!("no agent running at {}", p.target_addr)
                 }
                 _ => format!("Cannot reach target: {e}"),
             };
@@ -544,7 +544,7 @@ pub async fn stream_start(
             let msg = match &e {
                 toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
                 toq_core::error::Error::Io(msg) if msg.contains("Connection refused") => {
-                    "No agent running at target address".to_string()
+                    "no agent running at target address".to_string()
                 }
                 _ => format!("Cannot reach target: {e}"),
             };
