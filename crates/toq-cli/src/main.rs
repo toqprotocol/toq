@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,6 +41,42 @@ const LOGO_RAW: &str = r#"▄▄████████████████
                           ▀▀"#;
 
 const ABOUT: &str = "secure agent-to-agent communication";
+
+fn use_color() -> bool {
+    std::env::var("NO_COLOR").is_err() && io::stdout().is_terminal()
+}
+
+fn orange(s: &str) -> String {
+    if use_color() {
+        format!("\x1b[38;2;229;124;4m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn gold(s: &str) -> String {
+    if use_color() {
+        format!("\x1b[38;2;250;163;0m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn red(s: &str) -> String {
+    if use_color() {
+        format!("\x1b[31m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn dim(s: &str) -> String {
+    if use_color() {
+        format!("\x1b[2m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
 
 fn centered_logo() -> String {
     let about_width = ABOUT.len();
@@ -220,6 +256,24 @@ enum Commands {
         #[command(subcommand)]
         action: HandlerAction,
     },
+    /// View or modify configuration.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current configuration.
+    Show,
+    /// Set a configuration value.
+    Set {
+        /// Config key (e.g. connection_mode, agent_name, port)
+        key: String,
+        /// New value
+        value: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -265,7 +319,7 @@ async fn main() {
     // Show logo only when no args (not on subcommand --help)
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
-        println!("{}", centered_logo());
+        println!("{}", gold(&centered_logo()));
     }
 
     let cli = Cli::parse();
@@ -338,10 +392,11 @@ async fn main() {
         Commands::Upgrade => run_upgrade(),
         Commands::Logs { follow } => run_logs(follow),
         Commands::Handler { action } => run_handler(action).await,
+        Commands::Config { action } => run_config(action),
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        eprintln!("{}", red(&format!("error: {e}")));
         std::process::exit(1);
     }
 }
@@ -790,21 +845,7 @@ fn run_setup(
         }
         a
     } else {
-        let adapter_options = vec![
-            "http   - HTTP POST to a localhost URL (recommended)",
-            "stdin  - stdin/stdout JSON lines",
-            "unix   - Unix domain socket",
-        ];
-        let adapter_choice =
-            inquire::Select::new("How does your agent receive messages?", adapter_options)
-                .prompt()?;
-        if adapter_choice.starts_with("stdin") {
-            "stdin".to_string()
-        } else if adapter_choice.starts_with("unix") {
-            "unix".to_string()
-        } else {
-            "http".to_string()
-        }
+        cli_adapter.unwrap_or_else(|| "http".to_string())
     };
 
     if non_interactive {
@@ -937,7 +978,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         cmd.arg("--config-dir").arg(&resolved);
         let child = cmd.stdout(log_file.try_clone()?).stderr(log_file).spawn()?;
         let config = Config::load(&Config::default_path())?;
-        println!("toq started as daemon (PID {})", child.id());
+        println!(
+            "{}",
+            orange(&format!("toq started as daemon (PID {})", child.id()))
+        );
         println!("  agent:           {}", config.agent_name);
         println!(
             "  port:            {}",
@@ -1419,6 +1463,39 @@ fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+fn run_config(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+    let path = Config::default_path();
+    match action {
+        ConfigAction::Show => {
+            let contents = fs::read_to_string(&path)?;
+            print!("{contents}");
+        }
+        ConfigAction::Set { key, value } => {
+            let mut config = Config::load(&path)?;
+            match key.as_str() {
+                "agent_name" => config.agent_name = value.clone(),
+                "host" => config.host = value.clone(),
+                "port" => config.port = value.parse().map_err(|_| "invalid port")?,
+                "connection_mode" => {
+                    if !["open", "allowlist", "approval"].contains(&value.as_str()) {
+                        return Err("must be open, allowlist, or approval".into());
+                    }
+                    config.connection_mode = value.clone();
+                }
+                "log_level" => config.log_level = value.clone(),
+                "max_message_size" => {
+                    config.max_message_size = value.parse().map_err(|_| "invalid number")?
+                }
+                _ => return Err(format!("unknown config key '{key}'").into()),
+            }
+            config.save(&path)?;
+            println!("{key} = {value}");
+        }
+    }
+    Ok(())
+}
+
 fn run_whoami() -> Result<(), Box<dyn std::error::Error>> {
     require_setup();
     let config = Config::load(&Config::default_path())?;
@@ -1732,11 +1809,17 @@ async fn run_messages(from: Option<&str>, limit: usize) -> Result<(), Box<dyn st
                 let from = m["from"].as_str().unwrap_or("unknown");
                 let text = m["body"]["text"].as_str().unwrap_or("");
                 let ts = m["timestamp"].as_str().unwrap_or("");
+                let id = m["id"].as_str().unwrap_or("");
+                let thread = m["thread_id"].as_str().unwrap_or("-");
                 let msg_type = m["type"].as_str().unwrap_or("message.send");
                 if msg_type == "thread.close" {
-                    println!("[{ts}] {from} closed the thread");
+                    println!(
+                        "[{ts}] {from} closed the thread {}",
+                        dim(&format!("(thread: {thread})"))
+                    );
                 } else {
                     println!("[{ts}] {from}: {text}");
+                    println!("  {}", dim(&format!("id: {id}  thread: {thread}")));
                 }
             }
         }
@@ -2059,7 +2142,10 @@ async fn run_send(
         let resp_body: serde_json::Value = resp.json().await?;
         if let Some(status) = resp_body["status"].as_str() {
             let id = resp_body["id"].as_str().unwrap_or("unknown");
-            println!("Sent message {id} (status: {status})");
+            println!(
+                "{}",
+                orange(&format!("Sent message {id} (status: {status})"))
+            );
         } else if let Some(err) = resp_body["error"]["message"].as_str() {
             eprintln!("Send failed: {err}");
         } else {

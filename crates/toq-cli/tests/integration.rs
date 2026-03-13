@@ -1939,3 +1939,48 @@ fn whoami_shows_agent_info() {
         .stdout(predicates::str::contains("approval"))
         .stdout(predicates::str::contains("ed25519:"));
 }
+
+#[test]
+fn config_show() {
+    let inst = Instance::new("config-show", "approval", 19812, 19811);
+    inst.cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("agent_name"))
+        .stdout(predicates::str::contains("config-show"));
+}
+
+#[test]
+fn config_set_connection_mode() {
+    let inst = Instance::new("config-set", "approval", 19814, 19813);
+    inst.cmd()
+        .args(["config", "set", "connection_mode", "open"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("connection_mode = open"));
+    // Verify it persisted
+    inst.cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("open"));
+}
+
+#[test]
+fn config_set_invalid_mode() {
+    let inst = Instance::new("config-inv", "approval", 19816, 19815);
+    inst.cmd()
+        .args(["config", "set", "connection_mode", "bogus"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn config_set_unknown_key() {
+    let inst = Instance::new("config-unk", "approval", 19818, 19817);
+    inst.cmd()
+        .args(["config", "set", "nonexistent", "value"])
+        .assert()
+        .failure();
+}
