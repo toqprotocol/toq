@@ -91,11 +91,34 @@ impl LlmHandler {
 
             let include_close_tool = auto_close && !is_last_turn;
 
+            // Append turn context to system prompt
+            let full_prompt = if max_turns < usize::MAX {
+                if is_last_turn {
+                    format!(
+                        "{prompt}\n\nThis is your final response in this conversation (turn {turn_count} of {max_turns}). Wrap up naturally."
+                    )
+                } else if auto_close {
+                    format!(
+                        "{prompt}\n\nYou are on turn {turn_count} of {max_turns} in this conversation. When the conversation is naturally complete, use the close_thread tool to end it."
+                    )
+                } else {
+                    format!(
+                        "{prompt}\n\nYou are on turn {turn_count} of {max_turns} in this conversation."
+                    )
+                }
+            } else if auto_close {
+                format!(
+                    "{prompt}\n\nWhen the conversation is naturally complete, use the close_thread tool to end it."
+                )
+            } else {
+                prompt.clone()
+            };
+
             // Call LLM
             let result = llm::call(
                 &provider,
                 &model,
-                &prompt,
+                &full_prompt,
                 &history_snapshot,
                 include_close_tool,
             )

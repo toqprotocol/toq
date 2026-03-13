@@ -3024,3 +3024,55 @@ fn handler_entry_llm_roundtrip() {
     assert!(h.enabled);
     assert!(h.command.is_empty());
 }
+
+#[test]
+fn handler_entry_default_max_turns() {
+    use toq_core::config::HandlerEntry;
+    // LLM handler with no max_turns and no auto_close defaults to 10
+    let h = HandlerEntry {
+        provider: "openai".into(),
+        model: "gpt-4o".into(),
+        ..Default::default()
+    };
+    assert_eq!(h.max_turns, None);
+    assert!(!h.auto_close);
+    // The handler runtime applies DEFAULT_MAX_TURNS (10) when both are unset
+}
+
+#[test]
+fn handler_entry_auto_close_no_cap() {
+    use toq_core::config::HandlerEntry;
+    // auto_close with no max_turns means usize::MAX (no cap)
+    let h = HandlerEntry {
+        provider: "openai".into(),
+        model: "gpt-4o".into(),
+        auto_close: true,
+        ..Default::default()
+    };
+    assert!(h.auto_close);
+    assert_eq!(h.max_turns, None);
+}
+
+#[test]
+fn address_with_port_includes_port_in_display() {
+    use toq_core::types::Address;
+    let addr = Address::with_port("localhost", 9011, "bob").unwrap();
+    assert_eq!(addr.to_string(), "toq://localhost:9011/bob");
+}
+
+#[test]
+fn address_default_port_omits_port_in_display() {
+    use toq_core::types::Address;
+    let addr = Address::new("localhost", "bob").unwrap();
+    assert_eq!(addr.to_string(), "toq://localhost/bob");
+}
+
+#[test]
+fn address_with_port_roundtrips() {
+    use toq_core::types::Address;
+    let addr = Address::with_port("localhost", 9011, "bob").unwrap();
+    let parsed: Address = addr.to_string().parse().unwrap();
+    assert_eq!(parsed.port, 9011);
+    assert_eq!(parsed.host, "localhost");
+    assert_eq!(parsed.agent_name, "bob");
+}

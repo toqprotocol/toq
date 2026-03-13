@@ -1098,7 +1098,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     setup_logging();
     write_pid()?;
 
-    let address = Address::new(&config.host, &config.agent_name)?;
+    let address = Address::with_port(&config.host, config.port, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
     let local_card = load_card(&config, &keypair);
@@ -1870,10 +1870,15 @@ async fn run_messages(from: Option<&str>, limit: usize) -> Result<(), Box<dyn st
                 let thread = m["thread_id"].as_str().unwrap_or("-");
                 let msg_type = m["type"].as_str().unwrap_or("message.send");
                 if msg_type == "thread.close" {
-                    println!(
-                        "[{ts}] {from} closed the thread {}",
-                        dim(&format!("(thread: {thread})"))
-                    );
+                    if text.is_empty() {
+                        println!(
+                            "[{ts}] {from} closed the thread {}",
+                            dim(&format!("(thread: {thread})"))
+                        );
+                    } else {
+                        println!("[{ts}] {from}: {text} [thread closed]");
+                        println!("  {}", dim(&format!("id: {id}  thread: {thread}")));
+                    }
                 } else {
                     println!("[{ts}] {from}: {text}");
                     println!("  {}", dim(&format!("id: {id}  thread: {thread}")));
@@ -2211,7 +2216,7 @@ async fn run_send(
     // Daemon not running: connect directly
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
-    let address = Address::new(&config.host, &config.agent_name)?;
+    let address = Address::with_port(&config.host, config.port, &config.agent_name)?;
     let target_addr: Address = target.parse()?;
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
@@ -2293,7 +2298,7 @@ async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
     let (certs, key) =
         keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
 
-    let address = Address::new(&config.host, &config.agent_name)?;
+    let address = Address::with_port(&config.host, config.port, &config.agent_name)?;
     let tls_config = transport::server_config(certs, key)?;
     let tls_acceptor = transport::tls_acceptor(tls_config);
     let local_card = load_card(&config, &keypair);

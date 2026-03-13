@@ -959,7 +959,7 @@ pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody
     };
 
     let config = state.config.lock().await;
-    let address = match Address::new(&config.host, &config.agent_name) {
+    let address = match Address::with_port(&config.host, config.port, &config.agent_name) {
         Ok(a) => a,
         Err(_) => {
             return error_response(

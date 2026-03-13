@@ -56,7 +56,13 @@ fn sign_v4(
 ) -> Result<Vec<(String, String)>, String> {
     let parsed: url::Url = url.parse().map_err(|e| format!("bad url: {e}"))?;
     let host = parsed.host_str().ok_or("no host")?;
-    let path = parsed.path();
+    // SigV4 requires URI-encoding each path segment (double-encodes already-encoded chars)
+    let canonical_path = parsed
+        .path()
+        .split('/')
+        .map(|seg| urlencoding::encode(seg).into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
 
     let now = chrono::Utc::now();
     let date_stamp = now.format("%Y%m%d").to_string();
@@ -75,8 +81,9 @@ fn sign_v4(
         );
     }
 
-    let canonical_request =
-        format!("{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+    let canonical_request = format!(
+        "{method}\n{canonical_path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    );
 
     let scope = format!("{date_stamp}/{}/{SERVICE}/aws4_request", creds.region);
     let string_to_sign = format!(
