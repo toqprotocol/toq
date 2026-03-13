@@ -10,6 +10,7 @@ use crate::connection::ConnectionState;
 use crate::constants::{HANDSHAKE_TIMEOUT, NEGOTIATION_TIMEOUT};
 use crate::crypto::{Keypair, PublicKey};
 use crate::error::Error;
+use crate::framing;
 use crate::handshake;
 use crate::negotiation::{self, Features, NegotiatedFeatures};
 use crate::policy::{PolicyDecision, PolicyEngine};
@@ -43,7 +44,7 @@ pub async fn accept_connection(
     address: &Address,
     local_card: &AgentCard,
     local_features: &Features,
-    policy: Option<&mut PolicyEngine>,
+    mut policy: Option<&mut PolicyEngine>,
 ) -> Result<(ConnectionInfo, tokio_rustls::server::TlsStream<TcpStream>), Error> {
     // TLS
     let mut tls_stream = transport::tls_accept(tls_acceptor, tcp).await?;
@@ -56,8 +57,9 @@ pub async fn accept_connection(
     .await
     .map_err(|_| Error::Io("handshake timeout".into()))??;
 
-    // Policy check
-    if let Some(engine) = policy {
+    // Policy check (block/accept decided here; approval deferred to after negotiation)
+    let mut pending_approval = false;
+    if let Some(ref mut engine) = policy {
         match engine.check(&hs.peer_public_key, &hs.peer_address.to_string()) {
             PolicyDecision::Accept => {}
             PolicyDecision::Reject => {
@@ -67,22 +69,39 @@ pub async fn accept_connection(
             }
             PolicyDecision::PendingApproval => {
                 engine.add_pending(&hs.peer_public_key, &hs.peer_address.to_string());
-                // Send approval.request to the initiator before returning.
-                crate::connection::send_approval_request(
-                    &mut tls_stream,
-                    keypair,
-                    address,
-                    &hs.peer_address,
-                    Some("Connection pending approval by remote agent"),
-                    0,
-                )
-                .await?;
-                return Err(Error::InvalidEnvelope("connection pending approval".into()));
+                pending_approval = true;
             }
         }
     }
 
     // Negotiation (with timeout)
+    // If pending approval, read the negotiate request but respond with approval.request.
+    if pending_approval {
+        let _req = timeout(
+            NEGOTIATION_TIMEOUT,
+            framing::recv_envelope(
+                &mut tls_stream,
+                &hs.peer_public_key,
+                crate::constants::DEFAULT_MAX_MESSAGE_SIZE,
+            ),
+        )
+        .await
+        .map_err(|_| Error::Io("negotiation timeout".into()))??;
+
+        crate::connection::send_approval_request(
+            &mut tls_stream,
+            keypair,
+            address,
+            &hs.peer_address,
+            Some("Connection pending approval by remote agent"),
+            0,
+        )
+        .await?;
+        return Err(Error::ConnectionRejected(
+            "Connection pending approval by remote agent".into(),
+        ));
+    }
+
     let features = timeout(
         NEGOTIATION_TIMEOUT,
         negotiation::respond(

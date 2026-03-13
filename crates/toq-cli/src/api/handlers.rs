@@ -194,12 +194,16 @@ pub async fn send_message(
             let (info, mut stream) = match conn {
                 Ok(r) => r,
                 Err(e) => {
+                    let msg = match &e {
+                        toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                        _ => format!("Cannot reach target: {e}"),
+                    };
                     return MultiSendResult {
                         to: addr_str,
                         id: String::new(),
                         thread_id: tid,
                         status: STATUS_FAILED,
-                        error: Some(format!("Cannot reach target: {e}")),
+                        error: Some(msg),
                     };
                 }
             };
@@ -531,11 +535,11 @@ pub async fn stream_start(
     let (info, stream) = match connect_result {
         Ok(r) => r,
         Err(e) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                ERR_NOT_REACHABLE,
-                format!("Cannot reach target: {e}"),
-            );
+            let msg = match &e {
+                toq_core::error::Error::ConnectionRejected(reason) => reason.clone(),
+                _ => format!("Cannot reach target: {e}"),
+            };
+            return error_response(StatusCode::BAD_GATEWAY, ERR_NOT_REACHABLE, msg);
         }
     };
 
