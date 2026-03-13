@@ -145,7 +145,9 @@ enum Commands {
     },
     /// Send a message to an agent.
     Send {
+        /// Agent address (e.g. toq://host/agent-name)
         address: String,
+        /// Message text to send
         message: String,
         /// Continue an existing thread.
         #[arg(long)]
@@ -154,7 +156,7 @@ enum Commands {
         #[arg(long)]
         close_thread: bool,
     },
-    /// Start a dummy agent that prints incoming messages.
+    /// Listen for incoming messages in real time.
     Listen,
     /// Export keys, config, and peer list as an encrypted backup.
     Export { path: String },
@@ -258,9 +260,9 @@ enum HandlerAction {
 
 #[tokio::main]
 async fn main() {
-    // Show logo when no args or --help
+    // Show logo only when no args (not on subcommand --help)
     let args: Vec<String> = std::env::args().collect();
-    if args.len() == 1 || args.iter().any(|a| a == "--help" || a == "-h") {
+    if args.len() == 1 {
         println!("{}", centered_logo());
     }
 
@@ -358,7 +360,7 @@ fn state_path() -> PathBuf {
 fn require_setup() {
     if !keystore::is_setup_complete() {
         eprintln!("Setup not complete");
-        eprintln!("  Run `toq setup` to generate keys and create config");
+        eprintln!("  Run `toq init` to create a workspace, or `toq setup` for guided setup");
         std::process::exit(1);
     }
 }
@@ -366,7 +368,7 @@ fn require_setup() {
 fn require_running() {
     require_setup();
     if read_pid().is_none() {
-        eprintln!("Toq is not running");
+        eprintln!("toq is not running");
         eprintln!("  Run `toq up` to start the daemon");
         std::process::exit(1);
     }
@@ -568,10 +570,14 @@ fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
     let config_content = format!(
         "# toq workspace config\n\
+         # Docs: https://toq.dev/docs/getting-started/overview/\n\
          \n\
          agent_name = \"{name}\"\n\
          {port_line}\n\
-         {api_port_line}\n"
+         {api_port_line}\n\
+         \n\
+         # Connection mode: open, allowlist, or approval (default)\n\
+         connection_mode = \"approval\"\n"
     );
     fs::write(toq_dir.join("config.toml"), config_content)?;
 
@@ -884,6 +890,22 @@ fn run_setup(
 }
 
 async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // Require a workspace (.toq/ in cwd), global config (~/.toq/), or explicit --config-dir
+    let has_local_workspace = PathBuf::from(".toq").is_dir();
+    let has_explicit_config = std::env::var(toq_core::constants::TOQ_CONFIG_DIR_ENV).is_ok();
+    let has_global_config = {
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(home)
+            .join(".toq")
+            .join("config.toml")
+            .exists()
+    };
+    if !has_local_workspace && !has_explicit_config && !has_global_config {
+        eprintln!("No workspace found");
+        eprintln!("  Run `toq init` to create one, or `toq setup` for guided setup");
+        std::process::exit(1);
+    }
+
     // For workspaces: auto-generate keys if config exists but keys don't
     let config_exists = Config::default_path().exists();
     let keys_exist = keystore::identity_key_path().exists();
@@ -911,7 +933,18 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
         let resolved = dirs_path();
         cmd.arg("--config-dir").arg(&resolved);
         let child = cmd.stdout(log_file.try_clone()?).stderr(log_file).spawn()?;
+        let config = Config::load(&Config::default_path())?;
         println!("toq started as daemon (PID {})", child.id());
+        println!("  agent:           {}", config.agent_name);
+        println!(
+            "  port:            {}",
+            if config.port == 0 {
+                "auto".into()
+            } else {
+                config.port.to_string()
+            }
+        );
+        println!("  connection mode: {}", config.connection_mode);
         return Ok(());
     }
 
@@ -1341,10 +1374,10 @@ fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error
                 .status()?;
             if status.success() {
                 println!("toq down '{agent_name}' (PID {pid})");
-                let _ = fs::remove_file(&agent_file);
             } else {
-                eprintln!("Failed to stop PID {pid}");
+                println!("toq down '{agent_name}' (cleaned up stale state)");
             }
+            let _ = fs::remove_file(&agent_file);
         }
         return Ok(());
     }
@@ -1361,23 +1394,23 @@ fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error
                     } else {
                         println!("toq down (PID {pid})");
                     }
-                    let _ = fs::remove_file(pid_path());
-                    let _ = fs::remove_file(state_path());
-                    if let Ok(cfg) = Config::load(&Config::default_path()) {
-                        unregister_agent(&cfg.agent_name);
-                    }
                 } else {
-                    eprintln!("Failed to stop PID {pid}");
+                    println!("toq down (cleaned up stale state)");
+                }
+                let _ = fs::remove_file(pid_path());
+                let _ = fs::remove_file(state_path());
+                if let Ok(cfg) = Config::load(&Config::default_path()) {
+                    unregister_agent(&cfg.agent_name);
                 }
             }
             #[cfg(not(unix))]
             {
                 let _ = graceful;
-                eprintln!("Toq down not supported on this platform");
+                eprintln!("toq down not supported on this platform");
             }
         }
         None => {
-            println!("Toq is not running (no PID file found)");
+            println!("toq is not running (no PID file found)");
         }
     }
     Ok(())
@@ -1386,7 +1419,7 @@ fn run_down(graceful: bool, name: Option<&str>) -> Result<(), Box<dyn std::error
 fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     let sp = state_path();
     if !sp.exists() {
-        println!("Toq is not running");
+        println!("toq is not running");
         return Ok(());
     }
     let data = fs::read_to_string(&sp)?;
@@ -1974,7 +2007,26 @@ async fn run_send(
     println!("Connecting to {target_addr}...");
 
     let (info, mut stream) =
-        server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features).await?;
+        match server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features)
+            .await
+        {
+            Ok(r) => r,
+            Err(toq_core::error::Error::ConnectionRejected(reason)) => {
+                eprintln!("Send failed: {reason}");
+                std::process::exit(1);
+            }
+            Err(toq_core::error::Error::Io(msg)) if msg.contains("Connection refused") => {
+                eprintln!("Send failed: no agent running at {target_addr}");
+                std::process::exit(1);
+            }
+            Err(toq_core::error::Error::Io(msg))
+                if msg.contains("timed out") || msg.contains("timeout") =>
+            {
+                eprintln!("Send failed: connection timed out reaching {target_addr}");
+                std::process::exit(1);
+            }
+            Err(e) => return Err(e.into()),
+        };
 
     println!(
         "connected to {} ({})",
