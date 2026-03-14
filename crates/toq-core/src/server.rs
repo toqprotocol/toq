@@ -13,7 +13,7 @@ use crate::error::Error;
 use crate::framing;
 use crate::handshake;
 use crate::negotiation::{self, Features, NegotiatedFeatures};
-use crate::policy::{PolicyDecision, PolicyEngine};
+use crate::policy::{ConnectionMode, PolicyDecision, PolicyEngine};
 use crate::transport;
 use crate::types::Address;
 
@@ -60,7 +60,31 @@ pub async fn accept_connection(
     // Policy check (block/accept decided here; approval deferred to after negotiation)
     let mut pending_approval = false;
     if let Some(ref mut engine) = policy {
-        match engine.check(&hs.peer_public_key, &hs.peer_address.to_string()) {
+        // For DnsVerified mode, check if the peer's key matches their DNS records
+        let dns_verified = if engine.mode() == &ConnectionMode::DnsVerified {
+            let peer_addr = &hs.peer_address;
+            if crate::transport::is_ip_address(&peer_addr.host)
+                || !crate::transport::needs_dns_lookup(&peer_addr.host)
+            {
+                Some(false)
+            } else {
+                match crate::dns::lookup_agent(&peer_addr.host, &peer_addr.agent_name).await {
+                    Ok(Some(record)) => {
+                        let peer_key_b64 = hs.peer_public_key.to_encoded();
+                        Some(record.public_key_b64 == peer_key_b64)
+                    }
+                    _ => Some(false),
+                }
+            }
+        } else {
+            None
+        };
+
+        match engine.check(
+            &hs.peer_public_key,
+            &hs.peer_address.to_string(),
+            dns_verified,
+        ) {
             PolicyDecision::Accept => {}
             PolicyDecision::Reject => {
                 return Err(Error::InvalidEnvelope(

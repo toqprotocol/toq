@@ -2165,7 +2165,7 @@ mod tests {
         let policy = state.policy.lock().await;
         assert_eq!(policy.pending_count(), 0);
         assert_eq!(
-            policy.check(&kp.public_key(), "toq://test/peer"),
+            policy.check(&kp.public_key(), "toq://test/peer", None),
             toq_core::policy::PolicyDecision::Accept
         );
     }
@@ -2224,7 +2224,7 @@ mod tests {
                 .policy
                 .lock()
                 .await
-                .check(&kp.public_key(), "toq://test/peer"),
+                .check(&kp.public_key(), "toq://test/peer", None),
             PolicyDecision::Accept
         );
     }
@@ -2274,7 +2274,7 @@ mod tests {
                 .policy
                 .lock()
                 .await
-                .check(&kp.public_key(), "toq://test/peer"),
+                .check(&kp.public_key(), "toq://test/peer", None),
             toq_core::policy::PolicyDecision::Accept
         );
 
@@ -2296,7 +2296,7 @@ mod tests {
                 .policy
                 .lock()
                 .await
-                .check(&kp.public_key(), "toq://test/peer"),
+                .check(&kp.public_key(), "toq://test/peer", None),
             toq_core::policy::PolicyDecision::Reject
         );
     }
@@ -2382,7 +2382,7 @@ mod tests {
                 .policy
                 .lock()
                 .await
-                .check(&kp.public_key(), "toq://test/peer"),
+                .check(&kp.public_key(), "toq://test/peer", None),
             toq_core::policy::PolicyDecision::PendingApproval
         );
     }
@@ -2442,7 +2442,7 @@ mod tests {
                 .policy
                 .lock()
                 .await
-                .check(&kp.public_key(), "toq://any/addr"),
+                .check(&kp.public_key(), "toq://any/addr", None),
             toq_core::policy::PolicyDecision::Accept
         );
     }

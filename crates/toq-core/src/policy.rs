@@ -150,7 +150,15 @@ impl PolicyEngine {
     }
 
     /// Check whether an incoming connection should be accepted, held, or rejected.
-    pub fn check(&self, key: &PublicKey, address: &str) -> PolicyDecision {
+    ///
+    /// `dns_verified`: caller sets to `Some(true)` if the peer's public key was confirmed
+    /// in DNS TXT records for their claimed domain. Only affects `DnsVerified` mode.
+    pub fn check(
+        &self,
+        key: &PublicKey,
+        address: &str,
+        dns_verified: Option<bool>,
+    ) -> PolicyDecision {
         // Block rules take precedence over everything.
         if self.blocked.iter().any(|r| r.matches(key, address)) {
             return PolicyDecision::Reject;
@@ -171,7 +179,13 @@ impl PolicyEngine {
                     PolicyDecision::PendingApproval
                 }
             }
-            ConnectionMode::DnsVerified => PolicyDecision::Reject,
+            ConnectionMode::DnsVerified => {
+                if dns_verified == Some(true) {
+                    PolicyDecision::Accept
+                } else {
+                    PolicyDecision::Reject
+                }
+            }
         }
     }
 

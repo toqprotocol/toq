@@ -988,8 +988,24 @@ fn run_setup(
     println!("    and 'approval' or 'allowlist' connection mode");
 
     println!("\n  DNS discovery:");
-    println!("    Add a TXT record to make your agent discoverable:");
-    println!("    _toq._tcp.<domain>  \"v=toq1; key={pub_key_short}; agent={agent_name}\"");
+    println!("    To make your agent discoverable, add these DNS records:");
+    println!();
+    println!("    A record:");
+    println!("      <your-domain>  ->  <your-public-ip>");
+    println!();
+    println!("    TXT record:");
+    if config.port == toq_core::constants::DEFAULT_PORT {
+        println!(
+            "      _toq._tcp.<your-domain>  \"v=toq1; key={pub_key_short}; agent={agent_name}\""
+        );
+    } else {
+        println!(
+            "      _toq._tcp.<your-domain>  \"v=toq1; key={pub_key_short}; port={}; agent={agent_name}\"",
+            config.port
+        );
+    }
+    println!();
+    println!("    After adding records, verify with: toq doctor");
 
     Ok(())
 }
@@ -2651,6 +2667,44 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
             issues += 1;
         } else if !detected.is_empty() {
             println!("  [ok] public IP matches config ({})", config.host);
+        }
+    }
+
+    // Check DNS records (only if host is a domain name)
+    if toq_core::transport::needs_dns_lookup(&config.host) {
+        let pub_key = keystore::load_keypair(&keystore::identity_key_path())
+            .map(|kp| kp.public_key().to_encoded())
+            .unwrap_or_default();
+
+        match toq_core::dns::lookup_agent(&config.host, &config.agent_name).await {
+            Ok(Some(record)) => {
+                println!(
+                    "  [ok] DNS TXT record found for {} at {}",
+                    config.agent_name, config.host
+                );
+                if record.public_key_b64 == pub_key {
+                    println!("  [ok] DNS public key matches local key");
+                } else {
+                    println!("  [!!] DNS public key does not match local key");
+                    issues += 1;
+                }
+                if record.port != config.port {
+                    println!(
+                        "  [!!] DNS port ({}) does not match config port ({})",
+                        record.port, config.port
+                    );
+                    issues += 1;
+                }
+            }
+            Ok(None) => {
+                println!(
+                    "  [--] no DNS TXT record for {} at {}",
+                    config.agent_name, config.host
+                );
+            }
+            Err(_) => {
+                println!("  [--] DNS lookup failed for {}", config.host);
+            }
         }
     }
 
