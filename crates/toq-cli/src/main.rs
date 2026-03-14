@@ -114,6 +114,7 @@ Messaging:
   messages     Show recent received messages
   peers        List known peers
   ping         Ping a remote agent
+  discover     Discover agents at a domain via DNS
   handler      Manage message handlers
 
 Security:
@@ -275,6 +276,8 @@ enum Commands {
     Permissions,
     /// Ping a remote agent to discover its public key.
     Ping { address: String },
+    /// Discover agents at a domain via DNS TXT records.
+    Discover { domain: String },
     /// Show your agent's address, public key, and connection mode.
     Whoami,
     /// List all registered agents on this machine.
@@ -444,6 +447,7 @@ async fn main() {
         Commands::Doctor => run_doctor().await,
         Commands::Permissions => run_permissions().await,
         Commands::Ping { ref address } => run_ping(address).await,
+        Commands::Discover { ref domain } => run_discover(domain).await,
         Commands::Whoami => run_whoami(),
         Commands::Agents => run_agents(),
         Commands::Upgrade => run_upgrade(),
@@ -2146,6 +2150,32 @@ async fn run_ping(address: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+async fn run_discover(domain: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let records = toq_core::dns::lookup_txt(domain).await.map_err(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    })?;
+
+    if records.is_empty() {
+        println!("No agents found at {domain}");
+        return Ok(());
+    }
+
+    println!("Agents at {domain}:\n");
+    for record in &records {
+        let addr = if record.port == toq_core::constants::DEFAULT_PORT {
+            format!("toq://{}/{}", domain, record.agent_name)
+        } else {
+            format!("toq://{}:{}/{}", domain, record.port, record.agent_name)
+        };
+        println!(
+            "  {:<12} {:<40} {}",
+            record.agent_name, addr, record.public_key_b64
+        );
+    }
+
+    Ok(())
+}
 fn run_logs(follow: bool) -> Result<(), Box<dyn std::error::Error>> {
     let lp = log_path();
     if !lp.exists() {
@@ -2221,11 +2251,7 @@ async fn run_send(
     let local_card = load_card(&config, &keypair);
     let features = Features::default();
 
-    let connect_addr = toq_core::transport::resolve_connect_addr(
-        &target_addr.host,
-        target_addr.port,
-        &config.host,
-    );
+    let connect_addr = toq_core::transport::resolve_target_addr(&target_addr, &config.host).await;
     println!("Connecting to {target_addr}...");
 
     let (info, mut stream) =

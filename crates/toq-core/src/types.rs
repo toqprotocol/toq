@@ -7,11 +7,30 @@ use crate::error::Error;
 
 // --- Address ---
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Address {
     pub host: String,
     pub port: u16,
     pub agent_name: String,
+    /// Whether the port was explicitly specified in the address string.
+    /// When false, DNS TXT lookup may be used to resolve the correct port.
+    pub port_explicit: bool,
+}
+
+impl PartialEq for Address {
+    fn eq(&self, other: &Self) -> bool {
+        self.host == other.host && self.port == other.port && self.agent_name == other.agent_name
+    }
+}
+
+impl Eq for Address {}
+
+impl std::hash::Hash for Address {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.host.hash(state);
+        self.port.hash(state);
+        self.agent_name.hash(state);
+    }
 }
 
 impl Address {
@@ -22,6 +41,7 @@ impl Address {
             host: host.into(),
             port: DEFAULT_PORT,
             agent_name,
+            port_explicit: false,
         })
     }
 
@@ -36,6 +56,7 @@ impl Address {
             host: host.into(),
             port,
             agent_name,
+            port_explicit: true,
         })
     }
 }
@@ -84,14 +105,14 @@ impl FromStr for Address {
 
         validate_agent_name(agent_name)?;
 
-        let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
+        let (host, port, port_explicit) = if let Some((h, p)) = host_port.rsplit_once(':') {
             if let Ok(port) = p.parse::<u16>() {
-                (h.to_string(), port)
+                (h.to_string(), port, true)
             } else {
-                (host_port.to_string(), DEFAULT_PORT)
+                (host_port.to_string(), DEFAULT_PORT, false)
             }
         } else {
-            (host_port.to_string(), DEFAULT_PORT)
+            (host_port.to_string(), DEFAULT_PORT, false)
         };
 
         if host.is_empty() {
@@ -102,6 +123,7 @@ impl FromStr for Address {
             host,
             port,
             agent_name: agent_name.to_string(),
+            port_explicit,
         })
     }
 }

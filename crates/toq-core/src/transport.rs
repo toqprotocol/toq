@@ -153,3 +153,20 @@ pub fn resolve_connect_addr(target_host: &str, target_port: u16, local_host: &st
     };
     format!("{host}:{target_port}")
 }
+
+/// Resolve a target address, using DNS TXT records to find the port if not explicit.
+pub async fn resolve_target_addr(target: &crate::types::Address, local_host: &str) -> String {
+    let port = if !target.port_explicit && !is_ip_address(&target.host) {
+        match crate::dns::lookup_agent(&target.host, &target.agent_name).await {
+            Ok(Some(record)) => record.port,
+            _ => target.port,
+        }
+    } else {
+        target.port
+    };
+    resolve_connect_addr(&target.host, port, local_host)
+}
+
+pub fn is_ip_address(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>().is_ok()
+}

@@ -29,6 +29,7 @@ sha2 = "0.10"
 flate2 = "1"
 zstd = "0.13"
 reqwest = { version = "0.12", features = ["json"] }
+hickory-resolver = "0.25.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -90,6 +90,78 @@ fn address_reject_empty_name() {
     assert!(Address::new("example.com", "").is_err());
 }
 
+// --- Address port_explicit ---
+
+#[test]
+fn address_port_explicit_false_when_default() {
+    let addr: Address = "toq://example.com/alice".parse().unwrap();
+    assert!(!addr.port_explicit);
+    assert_eq!(addr.port, DEFAULT_PORT);
+}
+
+#[test]
+fn address_port_explicit_true_when_specified() {
+    let addr: Address = "toq://example.com:9011/bob".parse().unwrap();
+    assert!(addr.port_explicit);
+    assert_eq!(addr.port, 9011);
+}
+
+#[test]
+fn address_port_explicit_true_when_default_port_specified() {
+    let addr: Address = "toq://example.com:9009/alice".parse().unwrap();
+    assert!(addr.port_explicit);
+    assert_eq!(addr.port, DEFAULT_PORT);
+}
+
+#[test]
+fn address_equality_ignores_port_explicit() {
+    let a: Address = "toq://example.com/alice".parse().unwrap();
+    let b: Address = "toq://example.com:9009/alice".parse().unwrap();
+    assert!(!a.port_explicit);
+    assert!(b.port_explicit);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn address_hash_ignores_port_explicit() {
+    use std::collections::HashSet;
+    let a: Address = "toq://example.com/alice".parse().unwrap();
+    let b: Address = "toq://example.com:9009/alice".parse().unwrap();
+    let mut set = HashSet::new();
+    set.insert(a);
+    assert!(!set.insert(b)); // should be duplicate
+}
+
+#[test]
+fn address_serde_does_not_include_port_explicit() {
+    let addr: Address = "toq://example.com:9011/bob".parse().unwrap();
+    let json = serde_json::to_string(&addr).unwrap();
+    assert_eq!(json, "\"toq://example.com:9011/bob\"");
+    assert!(!json.contains("port_explicit"));
+}
+
+#[test]
+fn address_new_is_not_port_explicit() {
+    let addr = Address::new("example.com", "alice").unwrap();
+    assert!(!addr.port_explicit);
+}
+
+#[test]
+fn address_with_port_is_port_explicit() {
+    let addr = Address::with_port("example.com", 9011, "bob").unwrap();
+    assert!(addr.port_explicit);
+}
+
+// --- Transport DNS resolution ---
+
+#[test]
+fn is_ip_address_detection() {
+    assert!(toq_core::transport::is_ip_address("192.168.1.1"));
+    assert!(toq_core::transport::is_ip_address("::1"));
+    assert!(!toq_core::transport::is_ip_address("example.com"));
+    assert!(!toq_core::transport::is_ip_address("localhost"));
+}
+
 // --- MessageType ---
 
 #[test]

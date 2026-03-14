@@ -187,8 +187,7 @@ pub async fn send_message(
         let mt = msg_type.clone();
         handles.push(tokio::spawn(async move {
             let addr_str = target.to_string();
-            let connect_addr =
-                toq_core::transport::resolve_connect_addr(&target.host, target.port, &local_host);
+            let connect_addr = toq_core::transport::resolve_target_addr(&target, &local_host).await;
             let conn =
                 server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats).await;
             let (info, mut stream) = match conn {
@@ -328,11 +327,8 @@ async fn send_to_single(
     p: SingleSendParams,
     params: &SendMessageParams,
 ) -> Response {
-    let connect_addr = toq_core::transport::resolve_connect_addr(
-        &p.target_addr.host,
-        p.target_addr.port,
-        &state.address.host,
-    );
+    let connect_addr =
+        toq_core::transport::resolve_target_addr(&p.target_addr, &state.address.host).await;
     let connect_result =
         server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features).await;
 
@@ -526,8 +522,7 @@ pub async fn stream_start(
     drop(config);
 
     let features = toq_core::negotiation::Features::default();
-    let connect_addr =
-        toq_core::transport::resolve_connect_addr(&target_addr.host, target_addr.port, &local_host);
+    let connect_addr = toq_core::transport::resolve_target_addr(&target_addr, &local_host).await;
 
     let connect_result = server::connect_to_peer(
         &connect_addr,
@@ -971,8 +966,7 @@ pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody
     };
     drop(config);
 
-    let connect_addr =
-        toq_core::transport::resolve_connect_addr(&target.host, target.port, &address.host);
+    let connect_addr = toq_core::transport::resolve_target_addr(&target, &address.host).await;
     match server::ping_peer(&connect_addr, &keypair, &address).await {
         Ok(result) => json_ok(serde_json::json!({
             "agent_name": result.peer_address.agent_name,
@@ -998,12 +992,23 @@ pub struct DiscoverParams {
 }
 
 pub async fn discover_dns(Query(params): Query<DiscoverParams>) -> Response {
-    let query_name = toq_core::discovery::query_name(&params.host);
-    // DNS TXT lookup requires a resolver. For v1, return the query name
-    // so the SDK can resolve it. Full async DNS resolution will be added
-    // when we integrate trust-dns or hickory-dns.
-    let _ = query_name;
-    json_ok(DiscoverResponse { agents: vec![] })
+    match toq_core::dns::lookup_txt(&params.host).await {
+        Ok(records) => {
+            let agents: Vec<_> = records
+                .iter()
+                .filter_map(|r| {
+                    toq_core::discovery::to_discovered_agent(&params.host, r)
+                        .ok()
+                        .map(|d| DiscoveredAgent {
+                            address: d.address.to_string(),
+                            public_key: d.public_key_b64,
+                        })
+                })
+                .collect();
+            json_ok(DiscoverResponse { agents })
+        }
+        Err(_) => json_ok(DiscoverResponse { agents: vec![] }),
+    }
 }
 
 pub async fn discover_local() -> Response {

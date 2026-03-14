@@ -7,6 +7,7 @@ pub mod constants;
 pub mod crypto;
 pub mod delivery;
 pub mod discovery;
+pub mod dns;
 pub mod e2e;
 pub mod envelope;
 pub mod error;
