@@ -89,7 +89,8 @@ impl LlmHandler {
                 (history.clone(), *count, is_last)
             };
 
-            let include_close_tool = auto_close && !is_last_turn;
+            // Only offer close_thread tool after at least 2 turns of conversation
+            let include_close_tool = auto_close && !is_last_turn && turn_count >= 2;
 
             // Append turn context to system prompt
             let full_prompt = if max_turns < usize::MAX {
@@ -99,7 +100,7 @@ impl LlmHandler {
                     )
                 } else if auto_close {
                     format!(
-                        "{prompt}\n\nYou are on turn {turn_count} of {max_turns} in this conversation. When the conversation is naturally complete, use the close_thread tool to end it."
+                        "{prompt}\n\nYou are on turn {turn_count} of {max_turns} in this conversation. When the conversation has been fully explored, use the close_thread tool to end it. Do not close prematurely."
                     )
                 } else {
                     format!(
@@ -108,7 +109,7 @@ impl LlmHandler {
                 }
             } else if auto_close {
                 format!(
-                    "{prompt}\n\nWhen the conversation is naturally complete, use the close_thread tool to end it."
+                    "{prompt}\n\nWhen the conversation has been fully explored and both sides have shared their thoughts, use the close_thread tool to end it. Do not close prematurely."
                 )
             } else {
                 prompt.clone()
