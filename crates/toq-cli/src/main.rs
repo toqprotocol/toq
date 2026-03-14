@@ -2673,7 +2673,13 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     // Check DNS records (only if host is a domain name)
     if toq_core::transport::needs_dns_lookup(&config.host) {
         let pub_key = keystore::load_keypair(&keystore::identity_key_path())
-            .map(|kp| kp.public_key().to_encoded())
+            .map(|kp| {
+                let encoded = kp.public_key().to_encoded();
+                encoded
+                    .strip_prefix("ed25519:")
+                    .unwrap_or(&encoded)
+                    .to_string()
+            })
             .unwrap_or_default();
 
         match toq_core::dns::lookup_agent(&config.host, &config.agent_name).await {

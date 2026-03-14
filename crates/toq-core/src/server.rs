@@ -71,7 +71,10 @@ pub async fn accept_connection(
                 match crate::dns::lookup_agent(&peer_addr.host, &peer_addr.agent_name).await {
                     Ok(Some(record)) => {
                         let peer_key_b64 = hs.peer_public_key.to_encoded();
-                        Some(record.public_key_b64 == peer_key_b64)
+                        let peer_key_bare = peer_key_b64
+                            .strip_prefix(crate::constants::ED25519_PREFIX)
+                            .unwrap_or(&peer_key_b64);
+                        Some(record.public_key_b64 == peer_key_bare)
                     }
                     _ => Some(false),
                 }
