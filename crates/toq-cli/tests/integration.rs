@@ -2031,7 +2031,7 @@ fn handler_add_rejects_invalid_provider() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "must be openai, anthropic, or bedrock",
+            "must be openai, anthropic, bedrock, or ollama",
         ));
 }
 

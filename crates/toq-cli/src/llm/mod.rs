@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod bedrock;
 pub mod handler;
+pub mod ollama;
 pub mod openai;
 pub mod redact;
 
@@ -44,6 +45,7 @@ pub async fn call(
         "openai" => openai::call(model, system_prompt, messages, include_close_tool).await,
         "anthropic" => anthropic::call(model, system_prompt, messages, include_close_tool).await,
         "bedrock" => bedrock::call(model, system_prompt, messages, include_close_tool).await,
+        "ollama" => ollama::call(model, system_prompt, messages, include_close_tool).await,
         _ => Err(format!("unknown provider: {provider}")),
     }
 }

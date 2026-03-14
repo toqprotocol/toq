@@ -2740,8 +2740,8 @@ async fn run_handler(action: HandlerAction) -> Result<(), Box<dyn std::error::Er
                 return Err("cannot use both --command and --provider".into());
             }
             if let Some(ref p) = provider {
-                if !["openai", "anthropic", "bedrock"].contains(&p.as_str()) {
-                    return Err("provider must be openai, anthropic, or bedrock".into());
+                if !["openai", "anthropic", "bedrock", "ollama"].contains(&p.as_str()) {
+                    return Err("provider must be openai, anthropic, bedrock, or ollama".into());
                 }
                 if model.is_none() {
                     return Err("--model is required for LLM handlers".into());
