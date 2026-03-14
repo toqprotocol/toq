@@ -6,7 +6,7 @@ use crate::error::Error;
 /// Look up all toq TXT records for a domain.
 ///
 /// Queries `_toq._tcp.<domain>` and parses each valid record.
-/// Returns an empty vec if no records are found or DNS lookup fails.
+/// Non-toq TXT records at the same name are silently ignored.
 pub async fn lookup_txt(domain: &str) -> Result<Vec<DnsRecord>, Error> {
     let query = crate::discovery::query_name(domain);
 

@@ -156,7 +156,7 @@ pub fn resolve_connect_addr(target_host: &str, target_port: u16, local_host: &st
 
 /// Resolve a target address, using DNS TXT records to find the port if not explicit.
 pub async fn resolve_target_addr(target: &crate::types::Address, local_host: &str) -> String {
-    let port = if !target.port_explicit && !is_ip_address(&target.host) {
+    let port = if !target.port_explicit && needs_dns_lookup(&target.host) {
         match crate::dns::lookup_agent(&target.host, &target.agent_name).await {
             Ok(Some(record)) => record.port,
             _ => target.port,
@@ -165,6 +165,11 @@ pub async fn resolve_target_addr(target: &crate::types::Address, local_host: &st
         target.port
     };
     resolve_connect_addr(&target.host, port, local_host)
+}
+
+/// Whether a host is a real domain that could have DNS TXT records.
+pub fn needs_dns_lookup(host: &str) -> bool {
+    !is_ip_address(host) && host != "localhost" && !host.ends_with(".local")
 }
 
 pub fn is_ip_address(host: &str) -> bool {

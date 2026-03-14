@@ -162,6 +162,17 @@ fn is_ip_address_detection() {
     assert!(!toq_core::transport::is_ip_address("localhost"));
 }
 
+#[test]
+fn dns_lookup_skipped_for_local_hosts() {
+    use toq_core::transport::needs_dns_lookup;
+    assert!(!needs_dns_lookup("localhost"));
+    assert!(!needs_dns_lookup("192.168.1.1"));
+    assert!(!needs_dns_lookup("::1"));
+    assert!(!needs_dns_lookup("myhost.local"));
+    assert!(needs_dns_lookup("example.com"));
+    assert!(needs_dns_lookup("test.toq.dev"));
+}
+
 // --- MessageType ---
 
 #[test]
