@@ -1,4 +1,4 @@
-//! A2A protocol types (Agent2Agent spec RC v1.0).
+//! A2A protocol types (v0.3 + v1.0 compatible).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -99,8 +99,13 @@ pub struct Artifact {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
+    /// v0.3: protocol version at top level.
+    pub protocol_version: String,
     pub name: String,
     pub description: String,
+    /// v0.3: top-level URL for the preferred endpoint.
+    pub url: String,
+    /// v1.0: list of supported interfaces.
     pub supported_interfaces: Vec<AgentInterface>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<AgentProvider>,
@@ -215,4 +220,28 @@ pub struct GetTaskRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CancelTaskRequest {
     pub id: String,
+}
+
+// ── v0.3 compatibility ──────────────────────────────────
+
+/// v0.3 method names (slash-style).
+pub const METHOD_SEND_MESSAGE_V03: &str = "message/send";
+pub const METHOD_GET_TASK_V03: &str = "tasks/get";
+pub const METHOD_CANCEL_TASK_V03: &str = "tasks/cancel";
+
+/// Convert a v1.0 serialized Value to v0.3 wire format.
+/// Transforms TASK_STATE_X -> x and ROLE_X -> x throughout.
+pub fn to_v03(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(rest) = s.strip_prefix("TASK_STATE_") {
+                *s = rest.to_lowercase();
+            } else if let Some(rest) = s.strip_prefix("ROLE_") {
+                *s = rest.to_lowercase();
+            }
+        }
+        serde_json::Value::Array(arr) => arr.iter_mut().for_each(to_v03),
+        serde_json::Value::Object(map) => map.values_mut().for_each(to_v03),
+        _ => {}
+    }
 }

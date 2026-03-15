@@ -119,8 +119,10 @@ pub async fn agent_card_handler(State(state): State<ApiState>) -> Json<AgentCard
     }
 
     Json(AgentCard {
+        protocol_version: A2A_PROTOCOL_VERSION.into(),
         name,
         description,
+        url: url.clone(),
         supported_interfaces: vec![AgentInterface {
             url,
             protocol_binding: "JSONRPC".into(),
@@ -156,18 +158,22 @@ pub async fn jsonrpc_handler(
         return error_response(req.id, ERROR_INVALID_REQUEST, "Invalid JSON-RPC version");
     }
 
+    // Detect protocol version from method name style.
+    // v0.3 uses slash-style (message/send), v1.0 uses PascalCase (SendMessage).
+    let is_v03 = req.method.contains('/');
+
     match req.method.as_str() {
-        METHOD_SEND_MESSAGE => {
+        METHOD_SEND_MESSAGE | METHOD_SEND_MESSAGE_V03 => {
             tracing::info!("a2a: SendMessage (id={})", req.id);
-            handle_send_message(state, req.id, req.params).await
+            handle_send_message(state, req.id, req.params, is_v03).await
         }
-        METHOD_GET_TASK => {
+        METHOD_GET_TASK | METHOD_GET_TASK_V03 => {
             tracing::debug!("a2a: GetTask (id={})", req.id);
-            handle_get_task(state, req.id, req.params)
+            handle_get_task(state, req.id, req.params, is_v03)
         }
-        METHOD_CANCEL_TASK => {
+        METHOD_CANCEL_TASK | METHOD_CANCEL_TASK_V03 => {
             tracing::info!("a2a: CancelTask (id={})", req.id);
-            handle_cancel_task(state, req.id, req.params)
+            handle_cancel_task(state, req.id, req.params, is_v03)
         }
         _ => {
             tracing::warn!("a2a: unknown method '{}' (id={})", req.method, req.id);
@@ -180,6 +186,7 @@ async fn handle_send_message(
     state: ApiState,
     id: serde_json::Value,
     params: Option<serde_json::Value>,
+    is_v03: bool,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
     let params = match params {
         Some(p) => p,
@@ -271,7 +278,7 @@ async fn handle_send_message(
 
     match a2a.task_store.complete_with_text(&task_id, &reply_text) {
         Some(completed) => match serde_json::to_value(completed) {
-            Ok(v) => success_response(id, v),
+            Ok(v) => success_response_v03(id, v, is_v03),
             Err(e) => error_response(id, ERROR_INTERNAL, &format!("Serialization error: {e}")),
         },
         None => error_response(
@@ -286,6 +293,7 @@ fn handle_get_task(
     state: ApiState,
     id: serde_json::Value,
     params: Option<serde_json::Value>,
+    is_v03: bool,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
     let params = match params {
         Some(p) => p,
@@ -299,7 +307,7 @@ fn handle_get_task(
 
     match state.a2a.task_store.get(&req.id) {
         Some(task) => match serde_json::to_value(task) {
-            Ok(v) => success_response(id, v),
+            Ok(v) => success_response_v03(id, v, is_v03),
             Err(e) => error_response(id, ERROR_INTERNAL, &format!("Serialization error: {e}")),
         },
         None => error_response(id, ERROR_TASK_NOT_FOUND, "Task not found"),
@@ -310,6 +318,7 @@ fn handle_cancel_task(
     state: ApiState,
     id: serde_json::Value,
     params: Option<serde_json::Value>,
+    is_v03: bool,
 ) -> (StatusCode, Json<JsonRpcResponse>) {
     let params = match params {
         Some(p) => p,
@@ -336,7 +345,7 @@ fn handle_cancel_task(
                 .update_state(&req.id, TaskState::Canceled)
             {
                 Some(updated) => match serde_json::to_value(updated) {
-                    Ok(v) => success_response(id, v),
+                    Ok(v) => success_response_v03(id, v, is_v03),
                     Err(e) => {
                         error_response(id, ERROR_INTERNAL, &format!("Serialization error: {e}"))
                     }
@@ -380,4 +389,15 @@ fn success_response(
             error: None,
         }),
     )
+}
+
+fn success_response_v03(
+    id: serde_json::Value,
+    mut result: serde_json::Value,
+    is_v03: bool,
+) -> (StatusCode, Json<JsonRpcResponse>) {
+    if is_v03 {
+        to_v03(&mut result);
+    }
+    success_response(id, result)
 }
