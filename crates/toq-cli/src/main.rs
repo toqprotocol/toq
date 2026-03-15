@@ -153,6 +153,9 @@ enum Commands {
         /// Agent name
         #[arg(long, default_value = "agent")]
         name: String,
+        /// Host (domain name or IP for this agent's address)
+        #[arg(long, default_value = "localhost")]
+        host: String,
         /// Port (use "auto" for automatic assignment)
         #[arg(long, default_value = "auto")]
         port: String,
@@ -390,7 +393,11 @@ async fn main() {
     }
 
     let result = match cli.command {
-        Commands::Init { ref name, ref port } => run_init(name, port),
+        Commands::Init {
+            ref name,
+            ref host,
+            ref port,
+        } => run_init(name, host, port),
         Commands::Setup {
             non_interactive,
             agent_name,
@@ -669,7 +676,7 @@ fn detect_host() -> String {
         .unwrap_or_else(|_| "localhost".into())
 }
 
-fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
     let toq_dir = PathBuf::from(".toq");
     if toq_dir.exists() {
         return Err("Workspace already initialized (.toq/ exists)".into());
@@ -687,11 +694,17 @@ fn run_init(name: &str, port: &str) -> Result<(), Box<dyn std::error::Error>> {
         let p: u16 = port.parse().unwrap_or(toq_core::constants::DEFAULT_PORT);
         (format!("port = {p}"), format!("api_port = {}", p + 1))
     };
+    let host_line = if host != "localhost" {
+        format!("host = \"{host}\"\n")
+    } else {
+        String::new()
+    };
     let config_content = format!(
         "# toq workspace config\n\
          # Docs: https://toq.dev/docs/getting-started/overview/\n\
          \n\
          agent_name = \"{name}\"\n\
+         {host_line}\
          {port_line}\n\
          {api_port_line}\n\
          \n\

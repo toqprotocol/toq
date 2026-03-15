@@ -2060,3 +2060,39 @@ fn handler_add_llm_succeeds() {
         .success()
         .stdout(predicates::str::contains("chat"));
 }
+
+#[test]
+fn init_creates_workspace_with_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cmd = assert_cmd::Command::from_std(toq_cmd());
+    cmd.args([
+        "init",
+        "--name",
+        "alice",
+        "--host",
+        "example.com",
+        "--port",
+        "9009",
+    ])
+    .current_dir(dir.path())
+    .assert()
+    .success()
+    .stdout(predicates::str::contains("Agent: alice"));
+
+    let config = std::fs::read_to_string(dir.path().join(".toq/config.toml")).unwrap();
+    assert!(config.contains("host = \"example.com\""));
+    assert!(config.contains("agent_name = \"alice\""));
+}
+
+#[test]
+fn init_omits_host_when_localhost() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cmd = assert_cmd::Command::from_std(toq_cmd());
+    cmd.args(["init", "--name", "bob"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let config = std::fs::read_to_string(dir.path().join(".toq/config.toml")).unwrap();
+    assert!(!config.contains("host ="));
+}
