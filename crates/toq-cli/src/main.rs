@@ -2179,14 +2179,10 @@ async fn run_discover(domain: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Agents at {domain}:\n");
     for record in &records {
-        let addr = if record.port == toq_core::constants::DEFAULT_PORT {
-            format!("toq://{}/{}", domain, record.agent_name)
-        } else {
-            format!("toq://{}:{}/{}", domain, record.port, record.agent_name)
-        };
+        let addr = format!("toq://{}/{}", domain, record.agent_name);
         println!(
-            "  {:<12} {:<40} {}",
-            record.agent_name, addr, record.public_key_b64
+            "  {:<12} {:<40} port {}",
+            record.agent_name, addr, record.port
         );
     }
 
