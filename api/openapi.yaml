@@ -9,7 +9,7 @@ info:
 
     Default bind: 127.0.0.1:9010 (localhost only).
     Localhost-only. No authentication required (OS protects localhost).
-  version: 0.1.0-dev.1
+  version: 0.1.0-dev.9
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -1506,12 +1506,32 @@ components:
       type: object
       required:
         - name
-        - command
       properties:
         name:
           type: string
         command:
           type: string
+          description: Shell command (for shell handlers).
+        provider:
+          type: string
+          enum: [openai, anthropic, bedrock, ollama]
+          description: LLM provider (for LLM handlers).
+        model:
+          type: string
+          description: LLM model name (required when provider is set).
+        prompt:
+          type: string
+          description: System prompt for LLM handlers.
+        prompt_file:
+          type: string
+          description: Path to system prompt file.
+        max_turns:
+          type: integer
+          description: Max conversation turns before closing the thread.
+        auto_close:
+          type: boolean
+          default: false
+          description: Let the LLM decide when to close the thread.
         filter_from:
           type: array
           items:
@@ -1530,6 +1550,18 @@ components:
       properties:
         command:
           type: string
+        provider:
+          type: string
+        model:
+          type: string
+        prompt:
+          type: string
+        prompt_file:
+          type: string
+        max_turns:
+          type: integer
+        auto_close:
+          type: boolean
         enabled:
           type: boolean
         filter_from:
@@ -1551,6 +1583,10 @@ components:
         name:
           type: string
         command:
+          type: string
+        provider:
+          type: string
+        model:
           type: string
         enabled:
           type: boolean
