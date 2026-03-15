@@ -83,7 +83,7 @@ fn validate_agent_name(name: &str) -> Result<(), Error> {
 
 impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.port == DEFAULT_PORT {
+        if self.port == DEFAULT_PORT || crate::transport::needs_dns_lookup(&self.host) {
             write!(f, "toq://{}/{}", self.host, self.agent_name)
         } else {
             write!(f, "toq://{}:{}/{}", self.host, self.port, self.agent_name)

@@ -43,7 +43,9 @@ fn address_roundtrip() {
 fn address_roundtrip_custom_port() {
     let original = "toq://example.com:7070/agent";
     let addr: Address = original.parse().unwrap();
-    assert_eq!(addr.to_string(), original);
+    // Domain addresses omit port in display (DNS handles resolution)
+    assert_eq!(addr.to_string(), "toq://example.com/agent");
+    assert_eq!(addr.port, 7070);
 }
 
 #[test]
@@ -136,7 +138,8 @@ fn address_hash_ignores_port_explicit() {
 fn address_serde_does_not_include_port_explicit() {
     let addr: Address = "toq://example.com:9011/bob".parse().unwrap();
     let json = serde_json::to_string(&addr).unwrap();
-    assert_eq!(json, "\"toq://example.com:9011/bob\"");
+    // Domain addresses omit port in display (DNS handles resolution)
+    assert_eq!(json, "\"toq://example.com/bob\"");
     assert!(!json.contains("port_explicit"));
 }
 
@@ -1441,10 +1444,7 @@ fn to_discovered_agent() {
     let record =
         discovery::parse_txt_record("v=toq1; key=abc; port=7070; agent=assistant").unwrap();
     let agent = discovery::to_discovered_agent("example.com", &record).unwrap();
-    assert_eq!(
-        agent.address.to_string(),
-        "toq://example.com:7070/assistant"
-    );
+    assert_eq!(agent.address.to_string(), "toq://example.com/assistant");
     assert_eq!(agent.public_key_b64, "abc");
 }
 
@@ -3221,4 +3221,25 @@ fn address_with_port_roundtrips() {
     assert_eq!(parsed.port, 9011);
     assert_eq!(parsed.host, "localhost");
     assert_eq!(parsed.agent_name, "bob");
+}
+
+#[test]
+fn address_domain_omits_port_in_display() {
+    use toq_core::types::Address;
+    let addr = Address::with_port("example.com", 9011, "assistant").unwrap();
+    assert_eq!(addr.to_string(), "toq://example.com/assistant");
+}
+
+#[test]
+fn address_domain_default_port_omits_port_in_display() {
+    use toq_core::types::Address;
+    let addr = Address::with_port("example.com", 9009, "alice").unwrap();
+    assert_eq!(addr.to_string(), "toq://example.com/alice");
+}
+
+#[test]
+fn address_ip_nondefault_port_includes_port_in_display() {
+    use toq_core::types::Address;
+    let addr = Address::with_port("192.168.1.5", 9011, "agent").unwrap();
+    assert_eq!(addr.to_string(), "toq://192.168.1.5:9011/agent");
 }
