@@ -322,7 +322,7 @@ struct HandlerAddArgs {
     /// Shell command (for command handlers).
     #[arg(long)]
     command: Option<String>,
-    /// LLM provider: openai, anthropic, or bedrock.
+    /// LLM provider: openai, anthropic, bedrock, or ollama.
     #[arg(long)]
     provider: Option<String>,
     /// LLM model name.
@@ -878,9 +878,10 @@ fn run_setup(
         mode
     } else {
         let mode_options = vec![
-            "approval  - You approve each new agent (recommended)",
-            "open      - Anyone can connect",
-            "allowlist - Only pre-approved agents",
+            "approval      - You approve each new agent (recommended)",
+            "open          - Anyone can connect",
+            "allowlist     - Only pre-approved agents",
+            "dns-verified  - Only agents with valid DNS records",
         ];
         let mode_choice =
             inquire::Select::new("Who can connect to your agent?", mode_options).prompt()?;
@@ -888,6 +889,8 @@ fn run_setup(
             "open".to_string()
         } else if mode_choice.starts_with("allowlist") {
             "allowlist".to_string()
+        } else if mode_choice.starts_with("dns-verified") {
+            "dns-verified".to_string()
         } else {
             "approval".to_string()
         }
@@ -969,15 +972,15 @@ fn run_setup(
     match framework.as_str() {
         "langchain" => {
             println!("\n  LangChain integration:");
-            println!("    from toq_langchain import ToqToolkit, ToqListener");
-            println!("    toolkit = ToqToolkit()");
-            println!("    toolkit.connect()");
-            println!("    tools = toolkit.get_tools()");
+            println!("    from toq_langchain import connect, listen");
+            println!("    client = connect()");
+            println!("    tools = client.tools()");
         }
         "crewai" => {
             println!("\n  CrewAI integration:");
-            println!("    from toq_crewai import toq_tools, ToqListener");
-            println!("    tools = toq_tools()");
+            println!("    from toq_crewai import connect, listen");
+            println!("    client = connect()");
+            println!("    tools = client.tools()");
         }
         "openclaw" => {
             println!("\n  OpenClaw integration:");
