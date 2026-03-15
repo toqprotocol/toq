@@ -873,6 +873,14 @@ paths:
       responses:
         "200":
           description: Handlers reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [reloaded]
 
   /v1/handlers/stop:
     post:
