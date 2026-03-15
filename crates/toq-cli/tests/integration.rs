@@ -14,6 +14,11 @@ use tokio::time::sleep;
 const API_STARTUP_DELAY: Duration = Duration::from_secs(2);
 const SHUTDOWN_DELAY: Duration = Duration::from_millis(500);
 
+/// Shell command for an echo handler that replies via the local API.
+fn echo_handler_command() -> String {
+    r#"python3 -c "import os,json,urllib.request as r; r.urlopen(r.Request(os.environ['TOQ_URL']+'/v1/messages',json.dumps({'to':'a2a-client','body':{'text':'echo: '+os.environ['TOQ_TEXT']},'thread_id':os.environ['TOQ_THREAD_ID']}).encode(),{'Content-Type':'application/json'}))""#.replace('"', r#"\""#)
+}
+
 fn toq_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_toq"))
 }
@@ -2523,6 +2528,166 @@ async fn multiplexer_header_read_timeout() {
         "expected close around 10s, got {:.1}s",
         elapsed.as_secs_f64()
     );
+
+    inst.stop();
+}
+
+/// Verify ListTasks returns tasks.
+#[tokio::test]
+async fn a2a_list_tasks() {
+    let mut inst = Instance::new("a2a-list", "open", 30480);
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true"),
+    )
+    .unwrap();
+
+    // Add echo handler
+    let handlers_path = inst.dir.path().join(".toq/handlers.toml");
+    std::fs::write(
+        &handlers_path,
+        format!(
+            r#"[[handlers]]
+name = "echo"
+command = "{}"
+enabled = true
+"#,
+            echo_handler_command()
+        ),
+    )
+    .unwrap();
+
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // Send a message to create a task
+    let resp: serde_json::Value = client
+        .post(inst.api_url("/a2a"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "user",
+                    "parts": [{"text": "list test"}]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp["result"]["status"]["state"].as_str().unwrap(),
+        "completed"
+    );
+
+    // List all tasks
+    let resp: serde_json::Value = client
+        .post(inst.api_url("/a2a"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tasks/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tasks = resp["result"].as_array().unwrap();
+    assert!(!tasks.is_empty(), "expected at least one task");
+    assert_eq!(tasks[0]["status"]["state"].as_str().unwrap(), "completed");
+
+    inst.stop();
+}
+
+/// Verify streaming message returns SSE events.
+#[tokio::test]
+async fn a2a_stream_message() {
+    let mut inst = Instance::new("a2a-stream", "open", 30490);
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true"),
+    )
+    .unwrap();
+
+    let handlers_path = inst.dir.path().join(".toq/handlers.toml");
+    std::fs::write(
+        &handlers_path,
+        format!(
+            r#"[[handlers]]
+name = "echo"
+command = "{}"
+enabled = true
+"#,
+            echo_handler_command()
+        ),
+    )
+    .unwrap();
+
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+    let resp = client
+        .post(inst.api_url("/a2a"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "message/stream",
+            "params": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "user",
+                    "parts": [{"text": "stream test"}]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "text/event-stream"
+    );
+
+    // Collect all SSE events
+    let body = resp.text().await.unwrap();
+    let events: Vec<serde_json::Value> = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str(data).ok())
+        .collect();
+
+    // Should have at least: task (submitted), status (working), artifact, status (completed)
+    assert!(
+        events.len() >= 3,
+        "expected at least 3 SSE events, got {}: {body}",
+        events.len()
+    );
+
+    // Last event should be completed status
+    let last = events.last().unwrap();
+    let state = last["result"]["status"]["state"].as_str().unwrap_or("");
+    assert_eq!(state, "completed", "last event should be completed: {last}");
 
     inst.stop();
 }

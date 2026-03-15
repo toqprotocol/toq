@@ -178,6 +178,7 @@ pub const ERROR_CONTENT_TYPE_NOT_SUPPORTED: i32 = -32005;
 pub const ERROR_TASK_NOT_FOUND: i32 = -32001;
 pub const ERROR_TASK_NOT_CANCELABLE: i32 = -32002;
 pub const ERROR_INTERNAL: i32 = -32603;
+pub const ERROR_TASK_QUEUE_FULL: i32 = -32010;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -222,12 +223,49 @@ pub struct CancelTaskRequest {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTasksRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeTaskRequest {
+    pub id: String,
+}
+
+/// SSE wrapper for streaming responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatusUpdateEvent {
+    pub task_id: String,
+    pub context_id: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArtifactUpdateEvent {
+    pub task_id: String,
+    pub context_id: String,
+    pub artifact: Artifact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_chunk: Option<bool>,
+}
+
 // ── v0.3 compatibility ──────────────────────────────────
 
 /// v0.3 method names (slash-style).
 pub const METHOD_SEND_MESSAGE_V03: &str = "message/send";
+pub const METHOD_STREAM_MESSAGE_V03: &str = "message/stream";
 pub const METHOD_GET_TASK_V03: &str = "tasks/get";
+pub const METHOD_LIST_TASKS_V03: &str = "tasks/list";
 pub const METHOD_CANCEL_TASK_V03: &str = "tasks/cancel";
+pub const METHOD_SUBSCRIBE_TASK_V03: &str = "tasks/resubscribe";
 
 /// Convert a v1.0 serialized Value to v0.3 wire format.
 /// Transforms TASK_STATE_X -> x and ROLE_X -> x throughout.

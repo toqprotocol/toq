@@ -4,6 +4,10 @@ use super::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Maximum number of tasks kept in memory. Oldest terminal tasks
+/// are evicted when this limit is reached.
+const MAX_TASKS: usize = 1000;
+
 #[derive(Debug, Clone)]
 pub struct TaskStore {
     tasks: Arc<Mutex<HashMap<String, Task>>>,
@@ -16,14 +20,49 @@ impl TaskStore {
         }
     }
 
-    pub fn insert(&self, task: Task) {
+    pub fn insert(&self, task: Task) -> bool {
         if let Ok(mut tasks) = self.tasks.lock() {
+            // Evict oldest terminal tasks if at capacity
+            if tasks.len() >= MAX_TASKS {
+                let to_remove: Vec<String> = tasks
+                    .iter()
+                    .filter(|(_, t)| is_terminal(&t.status.state))
+                    .map(|(id, _)| id.clone())
+                    .take(tasks.len() - MAX_TASKS + 1)
+                    .collect();
+                for id in &to_remove {
+                    tasks.remove(id);
+                }
+                // Hard limit: reject if still at capacity after eviction
+                if tasks.len() >= MAX_TASKS {
+                    return false;
+                }
+            }
             tasks.insert(task.id.clone(), task);
+            true
+        } else {
+            false
         }
     }
 
     pub fn get(&self, id: &str) -> Option<Task> {
         self.tasks.lock().ok()?.get(id).cloned()
+    }
+
+    /// List all tasks, optionally filtered by context_id and/or state.
+    pub fn list(&self, context_id: Option<&str>, state: Option<&TaskState>) -> Vec<Task> {
+        let tasks = match self.tasks.lock() {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        };
+        tasks
+            .values()
+            .filter(|t| {
+                context_id.is_none_or(|c| t.context_id == c)
+                    && state.is_none_or(|s| &t.status.state == s)
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn update_state(&self, id: &str, new_state: TaskState) -> Option<Task> {
