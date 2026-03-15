@@ -2229,3 +2229,200 @@ async fn multiplexed_port_serves_http_and_toq() {
     alice.stop();
     bob.stop();
 }
+
+// ── A2A integration ──────────────────────────────────────────
+
+/// Verify A2A agent card is served when a2a_enabled is true.
+#[tokio::test]
+async fn a2a_agent_card() {
+    let mut inst = Instance::new("a2a-card", "open", 30410);
+    // Enable A2A in config
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true"),
+    )
+    .unwrap();
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+    let resp: serde_json::Value = client
+        .get(inst.api_url("/.well-known/agent-card.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp["name"].as_str().unwrap(), "a2a-card (toq)");
+    assert!(!resp["supportedInterfaces"].as_array().unwrap().is_empty());
+    assert_eq!(
+        resp["supportedInterfaces"][0]["protocolBinding"]
+            .as_str()
+            .unwrap(),
+        "JSONRPC"
+    );
+
+    inst.stop();
+}
+
+/// Verify A2A routes are not served when a2a_enabled is false.
+#[tokio::test]
+async fn a2a_disabled_returns_404() {
+    let mut inst = Instance::new("a2a-off", "open", 30420);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+    let resp = client
+        .get(inst.api_url("/.well-known/agent-card.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 404);
+
+    inst.stop();
+}
+
+/// Verify A2A SendMessage dispatches to LLM handler and returns a completed task.
+#[tokio::test]
+async fn a2a_send_message_with_handler() {
+    let mut inst = Instance::new("a2a-handler", "open", 30430);
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true"),
+    )
+    .unwrap();
+
+    // Add a shell handler that replies via the API
+    let handlers_path = inst.dir.path().join(".toq/handlers.toml");
+    std::fs::write(
+        &handlers_path,
+        r#"[[handlers]]
+name = "echo"
+command = "python3 -c \"import os,json,urllib.request as r; r.urlopen(r.Request(os.environ['TOQ_URL']+'/v1/messages',json.dumps({'to':'a2a-client','body':{'text':'echo: '+os.environ['TOQ_TEXT']},'thread_id':os.environ['TOQ_THREAD_ID']}).encode(),{'Content-Type':'application/json'}))\""
+enabled = true
+"#,
+    )
+    .unwrap();
+
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+    let resp: serde_json::Value = client
+        .post(inst.api_url("/a2a"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "messageId": "msg-1",
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello a2a"}]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Should get a completed task with the echo response
+    let result = &resp["result"];
+    assert_eq!(
+        result["status"]["state"].as_str().unwrap(),
+        "TASK_STATE_COMPLETED",
+        "expected completed task, got: {resp}"
+    );
+    let artifact_text = result["artifacts"][0]["parts"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        artifact_text.contains("echo: hello a2a"),
+        "expected echo reply, got: {artifact_text}"
+    );
+
+    inst.stop();
+}
+
+/// Verify A2A auth rejects requests without valid Bearer token.
+#[tokio::test]
+async fn a2a_auth_rejects_unauthorized() {
+    let mut inst = Instance::new("a2a-auth", "open", 30440);
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true")
+            + "\na2a_api_key = \"secret-token\"\n",
+    )
+    .unwrap();
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // No auth header
+    let resp = client
+        .post(inst.api_url("/a2a"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "SendMessage",
+            "params": {"message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "hi"}]}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    // Wrong token
+    let resp = client
+        .post(inst.api_url("/a2a"))
+        .header("Authorization", "Bearer wrong-token")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "SendMessage",
+            "params": {"message": {"messageId": "m2", "role": "ROLE_USER", "parts": [{"text": "hi"}]}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    // Correct token
+    let resp = client
+        .post(inst.api_url("/a2a"))
+        .header("Authorization", "Bearer secret-token")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "GetTask",
+            "params": {"id": "nonexistent"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Agent card is public even with auth configured
+    let resp = client
+        .get(inst.api_url("/.well-known/agent-card.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    inst.stop();
+}

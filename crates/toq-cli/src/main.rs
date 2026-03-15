@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use toq_core::adapter::AgentMessage;
 
+mod a2a;
 mod api;
 mod llm;
 use toq_core::card::AgentCard;
@@ -1264,17 +1265,24 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let handler_mgr = api_state.handler_manager.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
-    let http_router = api::router(api_state);
+    let http_router = api::router(api_state.clone(), config.a2a_enabled);
+    let http_remote_router = api::remote_router(api_state, config.a2a_enabled);
 
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 let (tcp, peer_addr) = accept?;
 
-                // Peek first byte to determine protocol
+                // Peek first byte to determine protocol.
+                // Timeout prevents slowloris attacks where connections are
+                // opened but no data is sent, tying up tokio tasks.
+                const PEEK_TIMEOUT_SECS: u64 = 5;
                 let mut peek_buf = [0u8; 1];
-                match tcp.peek(&mut peek_buf).await {
-                    Ok(1) => {}
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(PEEK_TIMEOUT_SECS),
+                    tcp.peek(&mut peek_buf),
+                ).await {
+                    Ok(Ok(1)) => {}
                     _ => continue,
                 }
 
@@ -1282,7 +1290,19 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
                 // HTTP methods start with ASCII letters -> HTTP API
                 const TLS_HANDSHAKE_BYTE: u8 = 0x16;
                 if peek_buf[0] != TLS_HANDSHAKE_BYTE {
-                    let app = http_router.clone();
+                    // Local connections get full API; remote connections
+                    // only get A2A routes (if enabled) and are rate limited.
+                    let app = if peer_addr.ip().is_loopback() {
+                        http_router.clone()
+                    } else {
+                        let mut rl = rate_limiter.lock().await;
+                        if !rl.check(peer_addr.ip()) {
+                            tracing::warn!("rate limited: {}", peer_addr.ip());
+                            continue;
+                        }
+                        drop(rl);
+                        http_remote_router.clone()
+                    };
                     tokio::spawn(async move {
                         api::serve_connection(app, tcp).await;
                     });

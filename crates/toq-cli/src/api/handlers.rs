@@ -72,6 +72,30 @@ pub async fn send_message(
     Query(params): Query<SendMessageParams>,
     Json(req): Json<SendMessageRequest>,
 ) -> Response {
+    // Check if this is a reply to a pending A2A request. If the thread_id has
+    // a registered reply channel, route the message text through it instead of
+    // sending via the toq protocol. This is how handler replies reach A2A clients.
+    if let Some(ref thread_id) = req.thread_id {
+        let mut channels = state.a2a_reply_channels.lock().await;
+        if let Some(tx) = channels.remove(thread_id) {
+            let text = req
+                .body
+                .as_ref()
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = tx.send(text);
+            state.messages_out.fetch_add(1, Ordering::Relaxed);
+            return json_ok(serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "status": "delivered",
+                "thread_id": thread_id,
+                "timestamp": toq_core::now_utc(),
+            }));
+        }
+    }
+
     let is_single = req.to.is_single();
     let recipients = req.to.into_vec();
 
@@ -1908,7 +1932,7 @@ mod tests {
     }
 
     async fn get_json(path: &str) -> (u16, serde_json::Value) {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
@@ -1920,7 +1944,7 @@ mod tests {
     }
 
     async fn post_json(path: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::post(path)
@@ -1938,7 +1962,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_returns_ok() {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(Request::get("/v1/health").body(Body::empty()).unwrap())
             .await
@@ -2042,7 +2066,7 @@ mod tests {
 
     #[tokio::test]
     async fn block_peer_bad_key() {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/peers/not-a-key/block")
@@ -2064,7 +2088,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_update_invalid() {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2094,7 +2118,7 @@ mod tests {
         let kp = toq_core::crypto::Keypair::generate();
         let encoded = url_encode(&kp.public_key().to_encoded());
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/peers/{encoded}/block"))
@@ -2124,7 +2148,7 @@ mod tests {
             ));
         assert!(state.policy.lock().await.is_blocked(&kp.public_key()));
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::delete(format!("/v1/peers/{encoded}/block"))
@@ -2150,7 +2174,7 @@ mod tests {
             .await
             .add_pending(&kp.public_key(), "toq://test/peer");
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/approvals/{encoded}"))
@@ -2182,7 +2206,7 @@ mod tests {
             .await
             .add_pending(&kp.public_key(), "toq://test/peer");
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/approvals/{encoded}"))
@@ -2207,7 +2231,7 @@ mod tests {
         let state = test_state();
         *state.policy.lock().await = PolicyEngine::new(ConnectionMode::Allowlist);
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/approvals/{encoded}"))
@@ -2231,7 +2255,7 @@ mod tests {
 
     #[tokio::test]
     async fn unblock_invalid_key_returns_400() {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::delete("/v1/peers/not-a-valid-key/block")
@@ -2248,7 +2272,7 @@ mod tests {
         let kp = toq_core::crypto::Keypair::generate();
         let encoded = url_encode(&kp.public_key().to_encoded());
 
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/approvals/{encoded}"))
@@ -2279,7 +2303,7 @@ mod tests {
         );
 
         // Block via API
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/peers/{encoded}/block"))
@@ -2312,7 +2336,7 @@ mod tests {
             .add_pending(&kp.public_key(), "toq://test/peer");
 
         let (status, body) = {
-            let app = crate::api::router(state.clone());
+            let app = crate::api::router(state.clone(), false);
             let resp = app
                 .oneshot(Request::get("/v1/approvals").body(Body::empty()).unwrap())
                 .await
@@ -2335,7 +2359,7 @@ mod tests {
         let encoded = url_encode(&kp.public_key().to_encoded());
 
         // No pending, no approved, no blocked - just a random key
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post(format!("/v1/approvals/{encoded}"))
@@ -2365,7 +2389,7 @@ mod tests {
                 kp.public_key().as_bytes().to_vec(),
             ));
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::delete(format!("/v1/peers/{encoded}/block"))
@@ -2390,7 +2414,7 @@ mod tests {
     #[tokio::test]
     async fn block_rule_by_address() {
         let state = test_state();
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/block")
@@ -2407,7 +2431,7 @@ mod tests {
     #[tokio::test]
     async fn approve_rule_by_address() {
         let state = test_state();
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/approve")
@@ -2426,7 +2450,7 @@ mod tests {
         let state = test_state();
         let kp = toq_core::crypto::Keypair::generate();
         let body = serde_json::json!({"key": kp.public_key().to_encoded()});
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/approve")
@@ -2451,7 +2475,7 @@ mod tests {
     async fn revoke_rule_removes_access() {
         let state = test_state();
         // Approve first
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let _ = app
             .oneshot(
                 Request::post("/v1/approve")
@@ -2464,7 +2488,7 @@ mod tests {
         assert_eq!(state.policy.lock().await.list_approved().len(), 1);
 
         // Revoke
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/revoke")
@@ -2481,7 +2505,7 @@ mod tests {
     #[tokio::test]
     async fn unblock_rule_removes_block() {
         let state = test_state();
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let _ = app
             .oneshot(
                 Request::post("/v1/block")
@@ -2493,7 +2517,7 @@ mod tests {
             .unwrap();
         assert_eq!(state.policy.lock().await.list_blocked().len(), 1);
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::delete("/v1/block")
@@ -2525,7 +2549,7 @@ mod tests {
                 "toq://evil.com/*".into(),
             ));
 
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(Request::get("/v1/permissions").body(Body::empty()).unwrap())
             .await
@@ -2541,7 +2565,7 @@ mod tests {
 
     #[tokio::test]
     async fn rule_missing_key_and_from_returns_400() {
-        let app = crate::api::router(test_state());
+        let app = crate::api::router(test_state(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/block")
@@ -2557,7 +2581,7 @@ mod tests {
     #[tokio::test]
     async fn handler_add_list_remove() {
         let state = test_state();
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
 
         // Add handler
         let resp = app
@@ -2574,7 +2598,7 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         // List handlers
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(Request::get("/v1/handlers").body(Body::empty()).unwrap())
             .await
@@ -2586,7 +2610,7 @@ mod tests {
         assert_eq!(body["handlers"][0]["name"], "test");
 
         // Duplicate returns 409
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::post("/v1/handlers")
@@ -2599,7 +2623,7 @@ mod tests {
         assert_eq!(resp.status(), 409);
 
         // Remove handler
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::delete("/v1/handlers/test")
@@ -2611,10 +2635,69 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         // Remove nonexistent returns 404
-        let app = crate::api::router(state.clone());
+        let app = crate::api::router(state.clone(), false);
         let resp = app
             .oneshot(
                 Request::delete("/v1/handlers/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn remote_router_blocks_local_api() {
+        let state = test_state();
+        let app = crate::api::remote_router(state, true);
+
+        // /v1/* routes must not exist on the remote router
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/daemon/shutdown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+
+        // A2A routes must be accessible
+        let resp = app
+            .oneshot(
+                Request::get("/.well-known/agent-card.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn remote_router_empty_when_a2a_disabled() {
+        let state = test_state();
+        let app = crate::api::remote_router(state, false);
+
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+
+        let resp = app
+            .oneshot(
+                Request::get("/.well-known/agent-card.json")
                     .body(Body::empty())
                     .unwrap(),
             )

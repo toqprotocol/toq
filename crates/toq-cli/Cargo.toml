@@ -24,7 +24,7 @@ comfy-table = "7"
 hex = "0.4"
 hmac = "0.12"
 hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 inquire = "0.9"
 rand = "0.8"
 regex = "1"
@@ -35,7 +35,8 @@ uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+subtle = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower = "0.5"
 tracing = "0.1"

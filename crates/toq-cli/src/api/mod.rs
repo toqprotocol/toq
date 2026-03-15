@@ -15,7 +15,29 @@ use axum::routing::{get, post};
 
 use crate::api::handlers::*;
 
-pub fn router(state: ApiState) -> Router {
+pub fn router(state: ApiState, a2a_enabled: bool) -> Router {
+    let mut app = local_routes().with_state(state.clone());
+
+    if a2a_enabled {
+        app = app.merge(a2a_routes(state));
+    }
+
+    app
+}
+
+/// Routes only accessible from remote connections (A2A endpoints).
+/// Returns an empty router when A2A is disabled, ensuring remote
+/// connections cannot reach any local API routes.
+pub fn remote_router(state: ApiState, a2a_enabled: bool) -> Router {
+    if a2a_enabled {
+        a2a_routes(state)
+    } else {
+        Router::new()
+    }
+}
+
+/// Local-only API routes (`/v1/*`). Only served to loopback connections.
+fn local_routes() -> Router<ApiState> {
     Router::new()
         // Messages
         .route("/v1/messages", post(send_message).get(stream_messages))
@@ -75,10 +97,33 @@ pub fn router(state: ApiState) -> Router {
             "/v1/handlers/{name}",
             axum::routing::delete(remove_handler).put(update_handler),
         )
+}
+
+/// A2A routes accessible from any connection.
+fn a2a_routes(state: ApiState) -> Router {
+    let a2a_rpc = Router::new()
+        .route("/a2a", post(crate::a2a::handlers::jsonrpc_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::a2a::handlers::auth_middleware,
+        ));
+
+    Router::new()
+        .route(
+            "/.well-known/agent-card.json",
+            get(crate::a2a::handlers::agent_card_handler),
+        )
+        .merge(a2a_rpc)
         .with_state(state)
 }
 
+/// Header read timeout for HTTP connections. Prevents slowloris attacks
+/// where an attacker sends partial headers to hold connections open.
+const HTTP_HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Serve a single HTTP connection through the API router.
+/// Uses HTTP/1.1 only to prevent HTTP/2 multiplexing from bypassing
+/// the connection-level rate limiter.
 pub async fn serve_connection(app: Router, tcp: tokio::net::TcpStream) {
     let io = hyper_util::rt::TokioIo::new(tcp);
     let service = hyper::service::service_fn(move |req| {
@@ -88,7 +133,9 @@ pub async fn serve_connection(app: Router, tcp: tokio::net::TcpStream) {
             app.call(req).await
         }
     });
-    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-        .serve_connection_with_upgrades(io, service)
+    let _ = hyper::server::conn::http1::Builder::new()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(HTTP_HEADER_READ_TIMEOUT)
+        .serve_connection(io, service)
         .await;
 }

@@ -381,6 +381,13 @@ pub struct ApiState {
     pub active_streams: Arc<Mutex<std::collections::HashMap<String, ActiveStream>>>,
     pub history: Arc<Mutex<MessageHistory>>,
     pub handler_manager: Arc<Mutex<HandlerManager>>,
+    pub a2a: crate::a2a::handlers::A2aState,
+    /// Pending A2A reply channels keyed by thread_id. When a handler sends a
+    /// reply on a thread that has a pending channel, the reply is routed through
+    /// the channel instead of being sent via the toq protocol.
+    pub a2a_reply_channels: Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+    >,
 }
 
 /// Parameters for constructing [`ApiState`].
@@ -423,6 +430,8 @@ impl ApiState {
             active_streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
             history: Arc::new(Mutex::new(history)),
             handler_manager: Arc::new(Mutex::new(HandlerManager::new(handlers, api_url))),
+            a2a: crate::a2a::handlers::A2aState::new(),
+            a2a_reply_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
