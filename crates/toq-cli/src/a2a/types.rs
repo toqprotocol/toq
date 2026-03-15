@@ -39,6 +39,9 @@ pub struct Task {
     pub artifacts: Option<Vec<Artifact>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<Vec<Message>>,
+    /// v0.3: discriminator field for streaming. Omitted for v1.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 pub fn is_terminal(state: &TaskState) -> bool {
@@ -245,6 +248,12 @@ pub struct TaskStatusUpdateEvent {
     pub task_id: String,
     pub context_id: String,
     pub status: TaskStatus,
+    /// v0.3: discriminator field. Omitted for v1.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// v0.3: whether this is the final status update. Omitted for v1.0.
+    #[serde(rename = "final", skip_serializing_if = "Option::is_none")]
+    pub is_final: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +264,9 @@ pub struct TaskArtifactUpdateEvent {
     pub artifact: Artifact,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_chunk: Option<bool>,
+    /// v0.3: discriminator field. Omitted for v1.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 // ── v0.3 compatibility ──────────────────────────────────

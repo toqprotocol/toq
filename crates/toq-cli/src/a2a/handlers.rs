@@ -254,6 +254,7 @@ async fn handle_send_message(
         },
         artifacts: None,
         history: Some(vec![req.message]),
+        kind: None,
     };
     if !a2a.task_store.insert(task) {
         return error_response(id, ERROR_TASK_QUEUE_FULL, "Task queue is full");
@@ -459,6 +460,7 @@ async fn handle_stream_message(
         .unwrap_or_else(|| format!("{CONTEXT_ID_PREFIX}{task_id}"));
     let thread_id = context_id.clone();
 
+    let task_kind = if is_v03 { Some("task".into()) } else { None };
     let task = Task {
         id: task_id.clone(),
         context_id: context_id.clone(),
@@ -469,6 +471,7 @@ async fn handle_stream_message(
         },
         artifacts: None,
         history: Some(vec![req.message]),
+        kind: task_kind,
     };
     if !a2a.task_store.insert(task.clone()) {
         return error_response(id.clone(), ERROR_TASK_QUEUE_FULL, "Task queue is full")
@@ -500,21 +503,25 @@ async fn handle_stream_message(
 
     // Return SSE stream
     let stream = async_stream::stream! {
+        // Helper: serialize result into JSON-RPC SSE event
+        let sse_event = |mut result: serde_json::Value| -> Event {
+            if is_v03 { to_v03(&mut result); }
+            let resp = serde_json::json!({"jsonrpc": JSONRPC_VERSION, "id": id, "result": result});
+            Event::default().data(resp.to_string())
+        };
+
+        // v0.3 kind values
+        let status_kind = if is_v03 { Some("status-update".into()) } else { None };
+        let artifact_kind = if is_v03 { Some("artifact-update".into()) } else { None };
+
         // Event 1: Task in submitted state
         let mut task_val = serde_json::to_value(&task).unwrap_or_default();
-        if is_v03 { to_v03(&mut task_val); }
-        let sse_resp = serde_json::json!({
-            "jsonrpc": JSONRPC_VERSION,
-            "id": id,
-            "result": task_val,
-        });
-        yield Ok::<_, std::convert::Infallible>(
-            Event::default().data(sse_resp.to_string())
-        );
+        if is_v03 { task_val["kind"] = "task".into(); }
+        yield Ok::<_, std::convert::Infallible>(sse_event(task_val));
 
         // Event 2: Status update to working
         a2a.task_store.update_state(&task_id, TaskState::Working);
-        let mut status_evt = serde_json::to_value(TaskStatusUpdateEvent {
+        let evt = TaskStatusUpdateEvent {
             task_id: task_id.clone(),
             context_id: context_id.clone(),
             status: TaskStatus {
@@ -522,14 +529,10 @@ async fn handle_stream_message(
                 message: None,
                 timestamp: Some(toq_core::now_utc()),
             },
-        }).unwrap_or_default();
-        if is_v03 { to_v03(&mut status_evt); }
-        let sse_resp = serde_json::json!({
-            "jsonrpc": JSONRPC_VERSION,
-            "id": id,
-            "result": status_evt,
-        });
-        yield Ok(Event::default().data(sse_resp.to_string()));
+            kind: status_kind.clone(),
+            is_final: if is_v03 { Some(false) } else { None },
+        };
+        yield Ok(sse_event(serde_json::to_value(evt).unwrap_or_default()));
 
         // Wait for handler reply
         let reply_text = match tokio::time::timeout(
@@ -540,7 +543,7 @@ async fn handle_stream_message(
             _ => {
                 state.a2a_reply_channels.lock().await.remove(&thread_id);
                 a2a.task_store.update_state(&task_id, TaskState::Failed);
-                let mut evt = serde_json::to_value(TaskStatusUpdateEvent {
+                let evt = TaskStatusUpdateEvent {
                     task_id: task_id.clone(),
                     context_id: context_id.clone(),
                     status: TaskStatus {
@@ -548,14 +551,10 @@ async fn handle_stream_message(
                         message: None,
                         timestamp: Some(toq_core::now_utc()),
                     },
-                }).unwrap_or_default();
-                if is_v03 { to_v03(&mut evt); }
-                let sse_resp = serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": id,
-                    "result": evt,
-                });
-                yield Ok(Event::default().data(sse_resp.to_string()));
+                    kind: status_kind.clone(),
+                    is_final: if is_v03 { Some(true) } else { None },
+                };
+                yield Ok(sse_event(serde_json::to_value(evt).unwrap_or_default()));
                 return;
             }
         };
@@ -564,35 +563,26 @@ async fn handle_stream_message(
         if let Some(completed) = a2a.task_store.complete_with_text(&task_id, &reply_text) {
             if let Some(ref artifacts) = completed.artifacts {
                 for artifact in artifacts {
-                    let mut art_evt = serde_json::to_value(TaskArtifactUpdateEvent {
+                    let evt = TaskArtifactUpdateEvent {
                         task_id: task_id.clone(),
                         context_id: context_id.clone(),
                         artifact: artifact.clone(),
                         last_chunk: Some(true),
-                    }).unwrap_or_default();
-                    if is_v03 { to_v03(&mut art_evt); }
-                    let sse_resp = serde_json::json!({
-                        "jsonrpc": JSONRPC_VERSION,
-                        "id": id,
-                        "result": art_evt,
-                    });
-                    yield Ok(Event::default().data(sse_resp.to_string()));
+                        kind: artifact_kind.clone(),
+                    };
+                    yield Ok(sse_event(serde_json::to_value(evt).unwrap_or_default()));
                 }
             }
 
-            // Event 4: Status update to completed
-            let mut status_evt = serde_json::to_value(TaskStatusUpdateEvent {
+            // Event 4: Status update to completed (final)
+            let evt = TaskStatusUpdateEvent {
                 task_id: task_id.clone(),
                 context_id: context_id.clone(),
                 status: completed.status,
-            }).unwrap_or_default();
-            if is_v03 { to_v03(&mut status_evt); }
-            let sse_resp = serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": id,
-                "result": status_evt,
-            });
-            yield Ok(Event::default().data(sse_resp.to_string()));
+                kind: status_kind,
+                is_final: if is_v03 { Some(true) } else { None },
+            };
+            yield Ok(sse_event(serde_json::to_value(evt).unwrap_or_default()));
         }
     };
 

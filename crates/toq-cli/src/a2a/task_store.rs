@@ -129,6 +129,7 @@ mod tests {
             },
             artifacts: None,
             history: None,
+            kind: None,
         }
     }
 
