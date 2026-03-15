@@ -2426,3 +2426,103 @@ async fn a2a_auth_rejects_unauthorized() {
 
     inst.stop();
 }
+
+/// Verify that unmatched routes on the A2A-enabled daemon return 404, not 401.
+/// This ensures the auth middleware only applies to /a2a, not the fallback.
+#[tokio::test]
+async fn a2a_unmatched_route_returns_404() {
+    let mut inst = Instance::new("a2a-404", "open", 30450);
+    let config_path = inst.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true")
+            + "\na2a_api_key = \"secret\"\n",
+    )
+    .unwrap();
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // A nonexistent path must return 404, not 401
+    let resp = client
+        .get(inst.api_url("/nonexistent"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+
+    // /v1/status via the local router must still work
+    let resp = client.get(inst.api_url("/v1/status")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    inst.stop();
+}
+
+/// Verify the peek timeout closes idle connections.
+/// Connects via raw TCP, sends nothing, and checks the connection closes
+/// within the expected timeframe (PEEK_TIMEOUT_SECS = 5).
+#[tokio::test]
+async fn multiplexer_peek_timeout() {
+    let mut inst = Instance::new("peek-to", "open", 30460);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let start = tokio::time::Instant::now();
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", inst.port))
+        .await
+        .unwrap();
+
+    // Wait for the server to close the connection (peek timeout).
+    // readable() returns when there's data OR the connection is closed.
+    let _ = tokio::time::timeout(Duration::from_secs(10), stream.readable()).await;
+    let elapsed = start.elapsed();
+
+    // Should close around 5 seconds (PEEK_TIMEOUT_SECS), not 10
+    assert!(
+        elapsed.as_secs() >= 4 && elapsed.as_secs() <= 7,
+        "expected close around 5s, got {:.1}s",
+        elapsed.as_secs_f64()
+    );
+
+    inst.stop();
+}
+
+/// Verify the header read timeout closes connections with partial headers.
+/// Sends an incomplete HTTP request and checks the connection closes
+/// within the expected timeframe (HTTP_HEADER_READ_TIMEOUT = 10s).
+#[tokio::test]
+async fn multiplexer_header_read_timeout() {
+    let mut inst = Instance::new("hdr-to", "open", 30470);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let start = tokio::time::Instant::now();
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", inst.port))
+        .await
+        .unwrap();
+
+    // Send partial HTTP headers (no final \r\n to complete the request)
+    stream
+        .try_write(b"GET / HTTP/1.1\r\nHost: test\r\n")
+        .unwrap();
+
+    // Wait for server to close (header read timeout)
+    let mut buf = [0u8; 1];
+    let _ = tokio::time::timeout(Duration::from_secs(15), async {
+        use tokio::io::AsyncReadExt;
+        let _ = stream.read(&mut buf).await;
+    })
+    .await;
+    let elapsed = start.elapsed();
+
+    // Should close around 10 seconds (HTTP_HEADER_READ_TIMEOUT), not 15
+    assert!(
+        elapsed.as_secs() >= 9 && elapsed.as_secs() <= 12,
+        "expected close around 10s, got {:.1}s",
+        elapsed.as_secs_f64()
+    );
+
+    inst.stop();
+}

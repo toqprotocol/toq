@@ -103,7 +103,7 @@ fn local_routes() -> Router<ApiState> {
 fn a2a_routes(state: ApiState) -> Router {
     let a2a_rpc = Router::new()
         .route("/a2a", post(crate::a2a::handlers::jsonrpc_handler))
-        .layer(axum::middleware::from_fn_with_state(
+        .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::a2a::handlers::auth_middleware,
         ));
