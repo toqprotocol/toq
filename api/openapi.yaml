@@ -905,7 +905,70 @@ paths:
                   name:
                     type: string
 
+  # ── A2A Protocol (network-accessible) ─────────────────────
+  # These endpoints are served on the remote router and accessible
+  # from any IP when a2a_enabled = true. Auth via Bearer token.
+
+  /.well-known/agent-card.json:
+    get:
+      operationId: a2aAgentCard
+      summary: A2A agent card (public discovery endpoint).
+      description: |
+        Returns the agent's A2A-compatible agent card for discovery.
+        No authentication required. Accessible from any IP.
+      tags: [a2a]
+      responses:
+        "200":
+          description: Agent card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/A2aAgentCard"
+
+  /a2a:
+    post:
+      operationId: a2aJsonRpc
+      summary: A2A JSON-RPC endpoint.
+      description: |
+        Accepts A2A JSON-RPC 2.0 requests. Supports both v0.3 method names
+        (message/send, tasks/get, tasks/cancel, message/stream, tasks/list,
+        tasks/resubscribe) and v1.0 method names (SendMessage, GetTask,
+        CancelTask, SendStreamingMessage, ListTasks, SubscribeToTask).
+
+        Streaming methods (message/stream, SendStreamingMessage, tasks/resubscribe,
+        SubscribeToTask) return text/event-stream (SSE) instead of JSON.
+
+        Protected by Bearer token auth when a2a_api_key is configured.
+      tags: [a2a]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonRpcRequest"
+      responses:
+        "200":
+          description: JSON-RPC response (or SSE stream for streaming methods).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonRpcResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream of JSON-RPC response events.
+        "401":
+          description: Unauthorized (missing or invalid Bearer token).
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: A2A Bearer token (a2a_api_key in config.toml).
+
   schemas:
     # ── Messages ────────────────────────────────────────────
 
@@ -1637,5 +1700,126 @@ components:
                 - message_too_large
                 - invalid_passphrase
                 - invalid_config
+            message:
+              type: string
+
+    # ── A2A Types ───────────────────────────────────────────
+
+    A2aAgentCard:
+      type: object
+      required:
+        - protocolVersion
+        - name
+        - description
+        - url
+        - version
+        - capabilities
+        - defaultInputModes
+        - defaultOutputModes
+        - skills
+      properties:
+        protocolVersion:
+          type: string
+          example: "1.0"
+        name:
+          type: string
+        description:
+          type: string
+        url:
+          type: string
+          description: v0.3 top-level endpoint URL.
+        supportedInterfaces:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              protocolBinding:
+                type: string
+              protocolVersion:
+                type: string
+        provider:
+          type: object
+          properties:
+            url:
+              type: string
+            organization:
+              type: string
+        version:
+          type: string
+        capabilities:
+          type: object
+          properties:
+            streaming:
+              type: boolean
+            pushNotifications:
+              type: boolean
+        securitySchemes:
+          type: object
+          additionalProperties: true
+        securityRequirements:
+          type: array
+          items:
+            type: object
+        defaultInputModes:
+          type: array
+          items:
+            type: string
+        defaultOutputModes:
+          type: array
+          items:
+            type: string
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              description:
+                type: string
+              tags:
+                type: array
+                items:
+                  type: string
+
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, id, method]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          description: Request identifier.
+        method:
+          type: string
+          description: |
+            v0.3: message/send, message/stream, tasks/get, tasks/list,
+            tasks/cancel, tasks/resubscribe.
+            v1.0: SendMessage, SendStreamingMessage, GetTask, ListTasks,
+            CancelTask, SubscribeToTask.
+        params:
+          description: Method-specific parameters.
+
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          description: Matches the request id.
+        result:
+          description: Method-specific result (present on success).
+        error:
+          type: object
+          properties:
+            code:
+              type: integer
             message:
               type: string

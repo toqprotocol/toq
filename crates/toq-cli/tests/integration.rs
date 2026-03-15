@@ -2691,3 +2691,101 @@ enabled = true
 
     inst.stop();
 }
+
+/// Verify A2A outbound: send to an https:// URL, probe agent card, deliver via A2A.
+#[tokio::test]
+async fn a2a_outbound_send() {
+    // Instance 1: A2A-enabled agent with echo handler (the target)
+    let mut target = Instance::new("a2a-target", "open", 30500);
+    let config_path = target.dir.path().join(".toq/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        config.replace("a2a_enabled = false", "a2a_enabled = true"),
+    )
+    .unwrap();
+    let handlers_path = target.dir.path().join(".toq/handlers.toml");
+    std::fs::write(
+        &handlers_path,
+        format!(
+            "[[handlers]]\nname = \"echo\"\ncommand = \"{}\"\nenabled = true\n",
+            echo_handler_command()
+        ),
+    )
+    .unwrap();
+    target.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    // Instance 2: sender (uses local API to send via A2A)
+    let mut sender = Instance::new("a2a-sender", "open", 30510);
+    sender.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // Send to the target via its HTTP URL (A2A outbound)
+    let target_url = format!("http://127.0.0.1:{}", target.port);
+    let resp: serde_json::Value = client
+        .post(sender.api_url("/v1/messages"))
+        .json(&serde_json::json!({
+            "to": target_url,
+            "body": {"text": "hello via a2a outbound"}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp["status"].as_str().unwrap(),
+        "delivered",
+        "expected delivered, got: {resp}"
+    );
+    assert!(
+        resp["a2a"].as_bool().unwrap_or(false),
+        "should be marked as a2a"
+    );
+    let reply = resp["reply"].as_str().unwrap_or("");
+    assert!(
+        reply.contains("echo: hello via a2a outbound"),
+        "expected echo reply, got: {reply}"
+    );
+
+    sender.stop();
+    target.stop();
+}
+
+/// Verify A2A outbound to a non-A2A URL returns a clear error.
+#[tokio::test]
+async fn a2a_outbound_no_agent_card() {
+    let mut inst = Instance::new("a2a-nocard", "open", 30520);
+    inst.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // Send to a URL that doesn't have an agent card (the sender's own
+    // local API, which has no /.well-known/agent-card.json since A2A is disabled)
+    let resp: serde_json::Value = client
+        .post(inst.api_url("/v1/messages"))
+        .json(&serde_json::json!({
+            "to": inst.api_url(""),
+            "body": {"text": "should fail"}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Should get an error, not a success
+    assert!(
+        resp.get("error").is_some(),
+        "expected error for non-A2A target, got: {resp}"
+    );
+
+    inst.stop();
+}

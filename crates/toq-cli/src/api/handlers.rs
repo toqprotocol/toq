@@ -107,7 +107,17 @@ pub async fn send_message(
         );
     }
 
-    // Parse all addresses upfront
+    // Check for A2A outbound (https:// URLs). Probe the target for an
+    // agent card to determine if it's an A2A agent. The URL is a discovery
+    // starting point, not a protocol assumption.
+    if is_single {
+        let target = &recipients[0];
+        if target.starts_with("https://") || target.starts_with("http://") {
+            return send_via_a2a(&state, target, &req.body, &req.thread_id).await;
+        }
+    }
+
+    // Parse all addresses upfront (toq:// scheme)
     let mut targets: Vec<Address> = Vec::with_capacity(recipients.len());
     for r in &recipients {
         match r.parse::<Address>() {
@@ -481,6 +491,55 @@ async fn send_to_single(
             }),
         )
             .into_response()
+    }
+}
+
+/// Send a message to a remote agent via A2A protocol.
+/// Probes the target URL for an agent card first to verify it's an A2A agent.
+async fn send_via_a2a(
+    state: &ApiState,
+    target_url: &str,
+    body: &Option<serde_json::Value>,
+    thread_id: &Option<String>,
+) -> Response {
+    let text = body
+        .as_ref()
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+
+    if text.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_REQUEST,
+            "Message body text is required for A2A send",
+        );
+    }
+
+    let client = crate::a2a::client::A2aClient::new();
+    match client.send_text(target_url, text, None).await {
+        Ok(result) => {
+            state.messages_out.fetch_add(1, Ordering::Relaxed);
+            let status = if result.state.contains("completed") || result.state.contains("COMPLETED")
+            {
+                "delivered"
+            } else {
+                "sent"
+            };
+            json_ok(serde_json::json!({
+                "id": result.task_id,
+                "status": status,
+                "thread_id": thread_id.as_deref().unwrap_or(""),
+                "timestamp": toq_core::now_utc(),
+                "a2a": true,
+                "reply": result.reply_text,
+            }))
+        }
+        Err(e) => error_response(
+            StatusCode::BAD_GATEWAY,
+            "a2a_send_failed",
+            format!("A2A send to {target_url} failed: {e}"),
+        ),
     }
 }
 
