@@ -515,8 +515,7 @@ async fn handle_stream_message(
         let artifact_kind = if is_v03 { Some("artifact-update".into()) } else { None };
 
         // Event 1: Task in submitted state
-        let mut task_val = serde_json::to_value(&task).unwrap_or_default();
-        if is_v03 { task_val["kind"] = "task".into(); }
+        let task_val = serde_json::to_value(&task).unwrap_or_default();
         yield Ok::<_, std::convert::Infallible>(sse_event(task_val));
 
         // Event 2: Status update to working

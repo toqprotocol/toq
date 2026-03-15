@@ -7,15 +7,15 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TaskState {
-    #[serde(rename = "TASK_STATE_SUBMITTED")]
+    #[serde(rename = "TASK_STATE_SUBMITTED", alias = "submitted")]
     Submitted,
-    #[serde(rename = "TASK_STATE_WORKING")]
+    #[serde(rename = "TASK_STATE_WORKING", alias = "working")]
     Working,
-    #[serde(rename = "TASK_STATE_COMPLETED")]
+    #[serde(rename = "TASK_STATE_COMPLETED", alias = "completed")]
     Completed,
-    #[serde(rename = "TASK_STATE_FAILED")]
+    #[serde(rename = "TASK_STATE_FAILED", alias = "failed")]
     Failed,
-    #[serde(rename = "TASK_STATE_CANCELED")]
+    #[serde(rename = "TASK_STATE_CANCELED", alias = "canceled")]
     Canceled,
 }
 
