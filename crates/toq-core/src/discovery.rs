@@ -19,7 +19,7 @@ pub struct DiscoveredAgent {
 
 /// Build the DNS query name for a domain: `_toq._tcp.<domain>`
 pub fn query_name(domain: &str) -> String {
-    format!("{DNS_SERVICE_PREFIX}{domain}")
+    format!("{DNS_SERVICE_PREFIX}{domain}.")
 }
 
 /// Parse a toq TXT record value.

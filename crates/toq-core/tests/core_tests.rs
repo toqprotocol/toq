@@ -1433,7 +1433,7 @@ fn query_name_format() {
 
     assert_eq!(
         discovery::query_name("example.com"),
-        "_toq._tcp.example.com"
+        "_toq._tcp.example.com."
     );
 }
 
