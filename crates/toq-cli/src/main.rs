@@ -110,7 +110,6 @@ Daemon:
 
 Messaging:
   send         Send a message to an agent
-  listen       Listen for incoming messages in real time
   messages     Show recent received messages
   peers        List known peers
   ping         Ping a remote agent
@@ -232,8 +231,6 @@ enum Commands {
         #[arg(long)]
         close_thread: bool,
     },
-    /// Listen for incoming messages in real time.
-    Listen,
     /// Export keys, config, and peer list as an encrypted backup.
     Export { path: String },
     /// Restore from an encrypted backup file.
@@ -433,7 +430,6 @@ async fn main() {
             ref thread_id,
             close_thread,
         } => run_send(address, message, thread_id.as_deref(), close_thread).await,
-        Commands::Listen => run_listen().await,
         Commands::Export { ref path } => run_export(path),
         Commands::Import { ref path } => run_import(path),
         Commands::RotateKeys => run_rotate_keys(),
@@ -991,7 +987,6 @@ fn run_setup(
         }
         _ => {
             println!("    toq send <addr> <msg>     Send a test message");
-            println!("    toq listen                Print incoming messages");
             println!("    toq down                  Stop the endpoint");
         }
     }
@@ -2340,137 +2335,6 @@ async fn run_send(
         println!("Unexpected response: {:?}", ack.msg_type);
     }
 
-    Ok(())
-}
-
-async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
-    let config_exists = Config::default_path().exists();
-    if !config_exists {
-        eprintln!("No workspace found");
-        eprintln!("  Run `toq init` to create one, or `toq setup` for guided setup");
-        std::process::exit(1);
-    }
-
-    let keys_exist = keystore::identity_key_path().exists();
-    if !keys_exist {
-        let keypair = Keypair::generate();
-        keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
-        keystore::generate_and_save_tls_cert(
-            &keystore::tls_cert_path(),
-            &keystore::tls_key_path(),
-        )?;
-    }
-
-    let config = Config::load(&Config::default_path())?;
-    let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
-    let (certs, key) =
-        keystore::load_tls_cert(&keystore::tls_cert_path(), &keystore::tls_key_path())?;
-
-    let address = Address::with_port(&config.host, config.port, &config.agent_name)?;
-    let tls_config = transport::server_config(certs, key)?;
-    let tls_acceptor = transport::tls_acceptor(tls_config);
-    let local_card = load_card(&config, &keypair);
-    let features = Features::default();
-
-    let policy_mode = match config.connection_mode.as_str() {
-        "open" => ConnectionMode::Open,
-        "allowlist" => ConnectionMode::Allowlist,
-        "dns-verified" => ConnectionMode::DnsVerified,
-        _ => ConnectionMode::Approval,
-    };
-    let mut engine = PolicyEngine::new(policy_mode);
-    let perms_file =
-        toq_core::config::PermissionsFile::load(&toq_core::config::PermissionsFile::path())
-            .unwrap_or_default();
-    engine.load_from_permissions(&perms_file);
-    let policy = std::sync::Arc::new(tokio::sync::Mutex::new(engine));
-
-    let bind_addr = format!(
-        "{}:{}",
-        toq_core::constants::DEFAULT_BIND_ADDRESS,
-        config.port
-    );
-    let listener = server::bind(&bind_addr).await?;
-    println!("toq listen on {address}");
-    println!("  listening on {bind_addr}");
-    println!("  Waiting for messages...\n");
-
-    loop {
-        tokio::select! {
-            accept = listener.accept() => {
-                let (tcp, peer_addr) = accept?;
-                let tls_acceptor = tls_acceptor.clone();
-                let keypair_clone = keypair.clone();
-                let address_clone = address.clone();
-                let card_clone = local_card.clone();
-                let features_clone = features.clone();
-                let policy_clone = policy.clone();
-
-                tokio::spawn(async move {
-                    let accept_result = {
-                        let mut policy_guard = policy_clone.lock().await;
-                        server::accept_connection(
-                            tcp, &tls_acceptor, &keypair_clone, &address_clone,
-                            &card_clone, &features_clone, Some(&mut *policy_guard),
-                        ).await
-                    };
-
-                    match accept_result {
-                        Ok((info, mut stream)) => {
-                            println!("Connected: {} ({}) from {peer_addr}", info.peer_card.name, info.peer_address);
-                            let mut seq = 2u64;
-                            while let Ok(envelope) = framing::recv_envelope(&mut stream, &info.peer_public_key, DEFAULT_MAX_MESSAGE_SIZE).await {
-                                match envelope.msg_type {
-                                    MessageType::MessageSend | MessageType::ThreadClose => {
-                                        let agent_msg = AgentMessage::from_envelope(&envelope);
-                                        println!("--- message from {} ---", agent_msg.from);
-                                        if let Some(body) = &agent_msg.body {
-                                            println!("{}", serde_json::to_string_pretty(body).unwrap_or_default());
-                                        }
-                                        if envelope.msg_type == MessageType::ThreadClose {
-                                            println!("[thread closed]");
-                                        }
-                                        println!("---");
-                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
-                                        seq += 1;
-                                    }
-                                    MessageType::StreamChunk => {
-                                        let agent_msg = AgentMessage::from_envelope(&envelope);
-                                        if let Some(text) = agent_msg.body.as_ref()
-                                            .and_then(|b| b.get("data"))
-                                            .and_then(|d| d.get("text"))
-                                            .and_then(|t| t.as_str())
-                                        {
-                                            print!("{text}");
-                                        }
-                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
-                                        seq += 1;
-                                    }
-                                    MessageType::StreamEnd => {
-                                        println!();
-                                        println!("--- stream end ---");
-                                        let _ = messaging::send_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
-                                        seq += 1;
-                                    }
-                                    MessageType::SessionDisconnect => { println!("Peer disconnected"); break; }
-                                    MessageType::Heartbeat => {
-                                        let _ = toq_core::connection::send_heartbeat_ack(&mut stream, &keypair_clone, &address_clone, &info.peer_address, &envelope.id, seq).await;
-                                        seq += 1;
-                                    }
-                                    other => { println!("received: {other:?}"); }
-                                }
-                            }
-                        }
-                        Err(e) => { eprintln!("connection from {peer_addr} failed: {e}"); }
-                    }
-                });
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nStopped");
-                break;
-            }
-        }
-    }
     Ok(())
 }
 

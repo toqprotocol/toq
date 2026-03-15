@@ -2098,7 +2098,7 @@ fn init_omits_host_when_localhost() {
 }
 
 #[test]
-fn listen_auto_generates_keys_after_init() {
+fn up_foreground_auto_generates_keys_after_init() {
     let dir = tempfile::tempdir().unwrap();
 
     // Init only (no setup, no keys)
@@ -2111,20 +2111,20 @@ fn listen_auto_generates_keys_after_init() {
     let keys_dir = dir.path().join(".toq/keys");
     assert!(!keys_dir.exists(), "keys should not exist after init");
 
-    // Listen should auto-generate keys and start (kill after 1s)
+    // toq up --foreground should auto-generate keys and start (kill after 1s)
     let mut child = StdCommand::new(toq_bin())
-        .args(["listen"])
+        .args(["up", "--foreground"])
         .current_dir(dir.path())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("failed to spawn toq listen");
+        .expect("failed to spawn toq up --foreground");
 
     std::thread::sleep(Duration::from_secs(1));
     let _ = child.kill();
     let _ = child.wait();
 
-    assert!(keys_dir.exists(), "keys should exist after listen");
+    assert!(keys_dir.exists(), "keys should exist after up --foreground");
     assert!(
         keys_dir.join("identity.key").exists(),
         "identity key should be generated"
@@ -2135,10 +2135,11 @@ fn listen_auto_generates_keys_after_init() {
     );
 
     kill_port(19050);
+    kill_port(19051);
 }
 
 #[test]
-fn listen_fails_without_workspace() {
+fn listen_command_removed() {
     let dir = tempfile::tempdir().unwrap();
 
     let mut cmd = assert_cmd::Command::from_std(toq_cmd());
@@ -2146,6 +2147,5 @@ fn listen_fails_without_workspace() {
         .current_dir(dir.path())
         .arg("listen")
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("No workspace found"));
+        .failure();
 }
