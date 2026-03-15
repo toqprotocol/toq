@@ -78,11 +78,17 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-/// Start the local API server.
-pub async fn serve(state: ApiState, address: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = address.parse::<std::net::SocketAddr>()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("local API listening on {addr}");
-    axum::serve(listener, router(state)).await?;
-    Ok(())
+/// Serve a single HTTP connection through the API router.
+pub async fn serve_connection(app: Router, tcp: tokio::net::TcpStream) {
+    let io = hyper_util::rt::TokioIo::new(tcp);
+    let service = hyper::service::service_fn(move |req| {
+        let mut app = app.clone();
+        async move {
+            use tower::Service;
+            app.call(req).await
+        }
+    });
+    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .serve_connection_with_upgrades(io, service)
+        .await;
 }

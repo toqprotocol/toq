@@ -588,7 +588,7 @@ fn find_available_port() -> u16 {
         if !claimed.contains(&port) {
             return port;
         }
-        port += 2; // protocol port and API port are consecutive
+        port += 1;
         if port > 9999 {
             return toq_core::constants::DEFAULT_PORT;
         }
@@ -681,14 +681,11 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
     fs::create_dir_all(toq_dir.join(LOGS_DIR))?;
 
     // Write config.toml
-    let (port_line, api_port_line) = if port == "auto" {
-        (
-            "port = 0  # auto-assigned on startup".to_string(),
-            "api_port = 0  # auto-assigned on startup".to_string(),
-        )
+    let port_line = if port == "auto" {
+        "port = 0  # auto-assigned on startup".to_string()
     } else {
         let p: u16 = port.parse().unwrap_or(toq_core::constants::DEFAULT_PORT);
-        (format!("port = {p}"), format!("api_port = {}", p + 1))
+        format!("port = {p}")
     };
     let host_line = if host != "localhost" {
         format!("host = \"{host}\"\n")
@@ -702,7 +699,6 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
          agent_name = \"{name}\"\n\
          {host_line}\
          {port_line}\n\
-         {api_port_line}\n\
          \n\
          # Connection mode: open, allowlist, or approval (default)\n\
          connection_mode = \"approval\"\n"
@@ -1096,9 +1092,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let auto_port = config.port == 0;
     if auto_port {
         config.port = find_available_port();
-        config.api_port = config.port + 1;
-    } else if config.api_port == 0 {
-        config.api_port = config.port + 1;
     }
 
     // If host is "auto", detect public IP on every startup.
@@ -1165,11 +1158,10 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             match server::bind(&addr).await {
                 Ok(l) => {
                     config.port = port;
-                    config.api_port = port + 1;
                     break l;
                 }
                 Err(_) => {
-                    port += 2;
+                    port += 1;
                     if port > 9999 {
                         return Err("No available port found".into());
                     }
@@ -1232,7 +1224,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let state_address = address.to_string();
     let state_mode = config.connection_mode.clone();
     let state_port = config.port;
-    let state_api_port = config.api_port;
     let conn_counter = active_connections.clone();
     let in_counter = messages_in.clone();
     let out_counter = messages_out.clone();
@@ -1241,7 +1232,6 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             "status": "running",
             "address": state_address,
             "port": state_port,
-            "api_port": state_api_port,
             "connection_mode": state_mode,
             "pid": std::process::id(),
             "active_connections": conn_counter.load(Ordering::Relaxed),
@@ -1257,7 +1247,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let error_count = std::sync::Arc::new(AtomicUsize::new(0));
 
-    // Start local API server
+    // Build API state
     let api_state = api::ApiState::new(api::state::ApiStateParams {
         config: config.clone(),
         keypair: keypair.clone(),
@@ -1274,19 +1264,32 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let handler_mgr = api_state.handler_manager.clone();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *api_state.shutdown_tx.lock().await = Some(shutdown_tx);
-    let api_address = format!("127.0.0.1:{}", config.api_port);
-    tokio::spawn(async move {
-        if let Err(e) = api::serve(api_state, &api_address).await {
-            tracing::warn!("local API server error: {e}");
-        }
-    });
+    let http_router = api::router(api_state);
 
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 let (tcp, peer_addr) = accept?;
 
-                // Rate limiting
+                // Peek first byte to determine protocol
+                let mut peek_buf = [0u8; 1];
+                match tcp.peek(&mut peek_buf).await {
+                    Ok(1) => {}
+                    _ => continue,
+                }
+
+                // TLS ClientHello starts with 0x16 -> toq protocol
+                // HTTP methods start with ASCII letters -> HTTP API
+                const TLS_HANDSHAKE_BYTE: u8 = 0x16;
+                if peek_buf[0] != TLS_HANDSHAKE_BYTE {
+                    let app = http_router.clone();
+                    tokio::spawn(async move {
+                        api::serve_connection(app, tcp).await;
+                    });
+                    continue;
+                }
+
+                // Rate limiting (toq protocol connections only)
                 {
                     let mut rl = rate_limiter.lock().await;
                     if !rl.check(peer_addr.ip()) {
@@ -1610,15 +1613,15 @@ fn run_status() -> Result<(), Box<dyn std::error::Error>> {
     }
     let data = fs::read_to_string(&sp)?;
     let file_state: serde_json::Value = serde_json::from_str(&data)?;
-    let api_port = file_state["api_port"].as_u64().unwrap_or_else(|| {
+    let port = file_state["port"].as_u64().unwrap_or_else(|| {
         Config::load(&Config::default_path())
-            .map(|c| c.api_port as u64)
-            .unwrap_or(toq_core::constants::DEFAULT_API_PORT as u64)
+            .map(|c| c.port as u64)
+            .unwrap_or(toq_core::constants::DEFAULT_PORT as u64)
     }) as u16;
 
     // Try live API first, fall back to state file
     let state = match std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], api_port)),
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(500),
     ) {
         Ok(mut tcp) => {
@@ -1859,7 +1862,7 @@ fn run_clear_logs() -> Result<(), Box<dyn std::error::Error>> {
 /// Base URL for the local daemon API.
 fn api_base() -> Result<String, Box<dyn std::error::Error>> {
     let config = Config::load(&Config::default_path())?;
-    Ok(format!("http://127.0.0.1:{}", config.api_port))
+    Ok(format!("http://127.0.0.1:{}", config.port))
 }
 
 async fn run_approvals() -> Result<(), Box<dyn std::error::Error>> {
@@ -2969,27 +2972,19 @@ mod tests {
 
     #[test]
     fn init_config_content_auto() {
-        let (port_line, api_port_line) = (
-            "port = 0  # auto-assigned on startup".to_string(),
-            "api_port = 0  # auto-assigned on startup".to_string(),
-        );
-        let config_content = format!(
-            "# toq workspace config\n\nagent_name = \"test-agent\"\n{port_line}\n{api_port_line}\n"
-        );
+        let port_line = "port = 0  # auto-assigned on startup".to_string();
+        let config_content =
+            format!("# toq workspace config\n\nagent_name = \"test-agent\"\n{port_line}\n");
         assert!(config_content.contains("agent_name = \"test-agent\""));
         assert!(config_content.contains("port = 0"));
-        assert!(config_content.contains("api_port = 0"));
     }
 
     #[test]
     fn init_config_content_explicit() {
         let p: u16 = 9020;
-        let config_content = format!(
-            "# toq workspace config\n\nagent_name = \"bot\"\nport = {p}\napi_port = {}\n",
-            p + 1
-        );
+        let config_content =
+            format!("# toq workspace config\n\nagent_name = \"bot\"\nport = {p}\n",);
         assert!(config_content.contains("port = 9020"));
-        assert!(config_content.contains("api_port = 9021"));
     }
 
     #[test]
@@ -3025,16 +3020,16 @@ mod tests {
     fn port_skip_logic() {
         let claimed: Vec<u16> = vec![
             toq_core::constants::DEFAULT_PORT,
-            toq_core::constants::DEFAULT_PORT + 2,
+            toq_core::constants::DEFAULT_PORT + 1,
         ];
         let mut port = toq_core::constants::DEFAULT_PORT;
         loop {
             if !claimed.contains(&port) {
                 break;
             }
-            port += 2;
+            port += 1;
         }
-        assert_eq!(port, toq_core::constants::DEFAULT_PORT + 4);
+        assert_eq!(port, toq_core::constants::DEFAULT_PORT + 2);
     }
 
     #[test]
@@ -3055,5 +3050,13 @@ mod tests {
             .status()
             .is_ok_and(|s| s.success());
         assert!(self_alive);
+    }
+
+    #[test]
+    fn tls_and_http_first_bytes_are_distinct() {
+        const TLS_HANDSHAKE_BYTE: u8 = 0x16;
+        for method in ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] {
+            assert_ne!(method.as_bytes()[0], TLS_HANDSHAKE_BYTE);
+        }
     }
 }

@@ -403,7 +403,7 @@ impl ApiState {
             .config
             .message_history_limit
             .unwrap_or(DEFAULT_HISTORY_LIMIT);
-        let api_url = format!("http://127.0.0.1:{}", p.config.api_port);
+        let api_url = format!("http://127.0.0.1:{}", p.config.port);
         let history = MessageHistory::load_from_file(limit);
         let handlers =
             toq_core::config::HandlersFile::load(&toq_core::config::HandlersFile::path())
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn handler_manager_stores_api_url() {
         let handlers = toq_core::config::HandlersFile::default();
-        let mgr = HandlerManager::new(handlers, "http://127.0.0.1:9010".into());
-        assert_eq!(mgr.api_url, "http://127.0.0.1:9010");
+        let mgr = HandlerManager::new(handlers, "http://127.0.0.1:9009".into());
+        assert_eq!(mgr.api_url, "http://127.0.0.1:9009");
     }
 }

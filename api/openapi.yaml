@@ -7,7 +7,7 @@ info:
     connections, retries, key management). This API is the interface
     between local agent code and the daemon.
 
-    Default bind: 127.0.0.1:9010 (localhost only).
+    Default bind: 127.0.0.1:9009 (localhost only).
     Localhost-only. No authentication required (OS protects localhost).
   version: 0.1.0-dev.9
   license:
@@ -15,7 +15,7 @@ info:
     url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
-  - url: http://127.0.0.1:9010
+  - url: http://127.0.0.1:9009
     description: Local daemon (default)
 
 security: []

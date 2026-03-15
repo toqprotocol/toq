@@ -22,11 +22,10 @@ fn toq_cmd() -> StdCommand {
     StdCommand::new(toq_bin())
 }
 
-/// Isolated toq instance with its own HOME, ports, and temp directory.
+/// Isolated toq instance with its own HOME, port, and temp directory.
 struct Instance {
     dir: TempDir,
-    api_port: u16,
-    proto_port: u16,
+    port: u16,
     started: bool,
 }
 
@@ -37,9 +36,8 @@ impl Drop for Instance {
             let _ = toq_cmd().env("HOME", self.dir.path()).arg("down").output();
             std::thread::sleep(Duration::from_millis(300));
 
-            // Kill anything still on our ports
-            kill_port(self.api_port);
-            kill_port(self.proto_port);
+            // Kill anything still on our port
+            kill_port(self.port);
         }
     }
 }
@@ -66,11 +64,10 @@ fn kill_port(port: u16) {
 }
 
 impl Instance {
-    /// Create a new instance with setup complete and ports patched.
-    fn new(name: &str, mode: &str, api_port: u16, proto_port: u16) -> Self {
-        // Kill anything on our ports from previous runs and wait for release
-        kill_port(api_port);
-        kill_port(proto_port);
+    /// Create a new instance with setup complete and port patched.
+    fn new(name: &str, mode: &str, port: u16) -> Self {
+        // Kill anything on our port from previous runs and wait for release
+        kill_port(port);
         std::thread::sleep(Duration::from_millis(200));
 
         let dir = TempDir::new().expect("failed to create temp dir");
@@ -92,18 +89,15 @@ impl Instance {
             .expect("failed to run toq setup");
         assert!(status.success(), "toq setup failed");
 
-        // Patch ports in config
+        // Patch port in config
         let config_path = dir.path().join(".toq/config.toml");
         let config = std::fs::read_to_string(&config_path).unwrap();
-        let config = config
-            .replace("port = 9009", &format!("port = {proto_port}"))
-            .replace("api_port = 9010", &format!("api_port = {api_port}"));
+        let config = config.replace("port = 9009", &format!("port = {port}"));
         std::fs::write(&config_path, config).unwrap();
 
         Self {
             dir,
-            api_port,
-            proto_port,
+            port,
             started: false,
         }
     }
@@ -115,7 +109,7 @@ impl Instance {
     }
 
     fn api_url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.api_port)
+        format!("http://127.0.0.1:{}{path}", self.port)
     }
 
     /// Spawn an SSE listener that collects chunks for up to `secs` seconds.
@@ -166,7 +160,7 @@ fn status_before_setup() {
 
 #[test]
 fn setup_creates_config_and_keys() {
-    let inst = Instance::new("test-agent", "approval", 29010, 29009);
+    let inst = Instance::new("test-agent", "approval", 29009);
     let toq_dir = inst.dir.path().join(".toq");
     assert!(toq_dir.join("config.toml").exists());
     assert!(toq_dir.join("keys").exists());
@@ -178,14 +172,14 @@ fn setup_creates_config_and_keys() {
 
 #[test]
 fn setup_open_mode() {
-    let inst = Instance::new("open-agent", "open", 29020, 29019);
+    let inst = Instance::new("open-agent", "open", 29019);
     let config = std::fs::read_to_string(inst.dir.path().join(".toq/config.toml")).unwrap();
     assert!(config.contains("open"));
 }
 
 #[test]
 fn setup_allowlist_mode() {
-    let inst = Instance::new("al-agent", "allowlist", 29030, 29029);
+    let inst = Instance::new("al-agent", "allowlist", 29029);
     let config = std::fs::read_to_string(inst.dir.path().join(".toq/config.toml")).unwrap();
     assert!(config.contains("allowlist"));
 }
@@ -216,7 +210,7 @@ fn setup_with_framework_flag() {
 
 #[tokio::test]
 async fn daemon_start_status_stop() {
-    let mut inst = Instance::new("lifecycle", "open", 29110, 29109);
+    let mut inst = Instance::new("lifecycle", "open", 29109);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -239,7 +233,7 @@ async fn daemon_start_status_stop() {
 
 #[tokio::test]
 async fn api_health() {
-    let mut inst = Instance::new("api-health", "open", 29210, 29209);
+    let mut inst = Instance::new("api-health", "open", 29209);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -257,7 +251,7 @@ async fn api_health() {
 
 #[tokio::test]
 async fn api_status() {
-    let mut inst = Instance::new("api-status", "open", 29220, 29219);
+    let mut inst = Instance::new("api-status", "open", 29219);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -280,7 +274,7 @@ async fn api_status() {
 
 #[tokio::test]
 async fn api_peers_empty() {
-    let mut inst = Instance::new("api-peers", "open", 29230, 29229);
+    let mut inst = Instance::new("api-peers", "open", 29229);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -300,7 +294,7 @@ async fn api_peers_empty() {
 
 #[tokio::test]
 async fn api_approvals_empty() {
-    let mut inst = Instance::new("api-approvals", "open", 29240, 29239);
+    let mut inst = Instance::new("api-approvals", "open", 29239);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -325,7 +319,7 @@ async fn api_approvals_empty() {
 
 #[tokio::test]
 async fn api_diagnostics() {
-    let mut inst = Instance::new("api-diag", "open", 29250, 29249);
+    let mut inst = Instance::new("api-diag", "open", 29249);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -348,7 +342,7 @@ async fn api_diagnostics() {
 
 #[tokio::test]
 async fn api_sse_connects() {
-    let mut inst = Instance::new("api-sse", "open", 29260, 29259);
+    let mut inst = Instance::new("api-sse", "open", 29259);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -374,7 +368,7 @@ async fn api_sse_connects() {
 
 #[tokio::test]
 async fn api_block_and_unblock() {
-    let mut inst = Instance::new("api-block", "open", 29310, 29309);
+    let mut inst = Instance::new("api-block", "open", 29309);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -416,7 +410,7 @@ async fn api_block_and_unblock() {
 
 #[tokio::test]
 async fn api_send_unreachable_returns_error() {
-    let mut inst = Instance::new("api-send", "open", 29320, 29319);
+    let mut inst = Instance::new("api-send", "open", 29319);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -443,7 +437,7 @@ async fn api_send_unreachable_returns_error() {
 
 #[tokio::test]
 async fn cli_peers_against_daemon() {
-    let mut inst = Instance::new("cli-peers", "open", 29410, 29409);
+    let mut inst = Instance::new("cli-peers", "open", 29409);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -456,7 +450,7 @@ async fn cli_peers_against_daemon() {
 
 #[tokio::test]
 async fn cli_approvals_against_daemon() {
-    let mut inst = Instance::new("cli-approvals", "open", 29420, 29419);
+    let mut inst = Instance::new("cli-approvals", "open", 29419);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -470,7 +464,7 @@ async fn cli_approvals_against_daemon() {
 
 #[tokio::test]
 async fn cli_doctor_against_daemon() {
-    let mut inst = Instance::new("cli-doctor", "open", 29430, 29429);
+    let mut inst = Instance::new("cli-doctor", "open", 29429);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -484,7 +478,7 @@ async fn cli_doctor_against_daemon() {
 
 #[tokio::test]
 async fn cli_logs_against_daemon() {
-    let mut inst = Instance::new("cli-logs", "open", 29440, 29439);
+    let mut inst = Instance::new("cli-logs", "open", 29439);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -498,7 +492,7 @@ async fn cli_logs_against_daemon() {
 
 #[tokio::test]
 async fn cli_down_immediate() {
-    let mut inst = Instance::new("down-imm", "open", 29510, 29509);
+    let mut inst = Instance::new("down-imm", "open", 29509);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -514,8 +508,8 @@ async fn cli_down_immediate() {
 
 #[tokio::test]
 async fn two_daemons_send_message() {
-    let mut alice = Instance::new("alice", "open", 29610, 29609);
-    let mut bob = Instance::new("bob", "open", 29620, 29619);
+    let mut alice = Instance::new("alice", "open", 29609);
+    let mut bob = Instance::new("bob", "open", 29619);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -567,8 +561,8 @@ async fn two_daemons_send_message() {
 
 #[tokio::test]
 async fn approval_mode_shows_pending() {
-    let mut alice = Instance::new("alice-ap", "open", 29630, 29629);
-    let mut bob = Instance::new("bob-ap", "approval", 29640, 29639);
+    let mut alice = Instance::new("alice-ap", "open", 29629);
+    let mut bob = Instance::new("bob-ap", "approval", 29639);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -614,7 +608,7 @@ async fn approval_mode_shows_pending() {
 
 #[tokio::test]
 async fn block_then_send_fails() {
-    let mut inst = Instance::new("block-send", "open", 29650, 29649);
+    let mut inst = Instance::new("block-send", "open", 29649);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -681,7 +675,7 @@ async fn block_then_send_fails() {
 
 #[tokio::test]
 async fn export_import_roundtrip() {
-    let mut inst = Instance::new("backup", "open", 29710, 29709);
+    let mut inst = Instance::new("backup", "open", 29709);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -731,7 +725,7 @@ async fn export_import_roundtrip() {
 
 #[tokio::test]
 async fn double_start_is_safe() {
-    let mut inst = Instance::new("double", "open", 29720, 29719);
+    let mut inst = Instance::new("double", "open", 29719);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -807,7 +801,7 @@ fn setup_twice_preserves_keys() {
 
 #[tokio::test]
 async fn clear_logs_empties_log_list() {
-    let mut inst = Instance::new("clear-logs", "open", 29730, 29729);
+    let mut inst = Instance::new("clear-logs", "open", 29729);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -846,7 +840,7 @@ async fn clear_logs_empties_log_list() {
 
 #[tokio::test]
 async fn api_send_missing_to_field() {
-    let mut inst = Instance::new("err-missing", "open", 29810, 29809);
+    let mut inst = Instance::new("err-missing", "open", 29809);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -867,7 +861,7 @@ async fn api_send_missing_to_field() {
 
 #[tokio::test]
 async fn api_send_invalid_address() {
-    let mut inst = Instance::new("err-addr", "open", 29820, 29819);
+    let mut inst = Instance::new("err-addr", "open", 29819);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -891,7 +885,7 @@ async fn api_send_invalid_address() {
 
 #[tokio::test]
 async fn api_send_invalid_json() {
-    let mut inst = Instance::new("err-json", "open", 29830, 29829);
+    let mut inst = Instance::new("err-json", "open", 29829);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -913,7 +907,7 @@ async fn api_send_invalid_json() {
 
 #[tokio::test]
 async fn api_block_empty_key() {
-    let mut inst = Instance::new("err-block", "open", 29840, 29839);
+    let mut inst = Instance::new("err-block", "open", 29839);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -937,7 +931,7 @@ async fn api_block_empty_key() {
 
 #[tokio::test]
 async fn api_send_streaming_to_unreachable() {
-    let mut inst = Instance::new("stream", "open", 29850, 29849);
+    let mut inst = Instance::new("stream", "open", 29849);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -964,7 +958,7 @@ async fn api_send_streaming_to_unreachable() {
 
 #[tokio::test]
 async fn api_config_get() {
-    let mut inst = Instance::new("cfg-get", "open", 29910, 29909);
+    let mut inst = Instance::new("cfg-get", "open", 29909);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -987,7 +981,7 @@ async fn api_config_get() {
 
 #[tokio::test]
 async fn api_config_update() {
-    let mut inst = Instance::new("cfg-upd", "open", 29920, 29919);
+    let mut inst = Instance::new("cfg-upd", "open", 29919);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1028,7 +1022,7 @@ async fn api_config_update() {
 
 #[tokio::test]
 async fn api_shutdown_graceful() {
-    let mut inst = Instance::new("api-shut", "open", 29930, 29929);
+    let mut inst = Instance::new("api-shut", "open", 29929);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1051,7 +1045,7 @@ async fn api_shutdown_graceful() {
 
 #[tokio::test]
 async fn api_agent_card() {
-    let mut inst = Instance::new("card", "open", 29940, 29939);
+    let mut inst = Instance::new("card", "open", 29939);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1084,7 +1078,7 @@ async fn api_agent_card() {
 
 #[tokio::test]
 async fn api_connections_empty() {
-    let mut inst = Instance::new("conns", "open", 29950, 29949);
+    let mut inst = Instance::new("conns", "open", 29949);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1108,7 +1102,7 @@ async fn api_connections_empty() {
 
 #[tokio::test]
 async fn api_discover_dns() {
-    let mut inst = Instance::new("disc-dns", "open", 29960, 29959);
+    let mut inst = Instance::new("disc-dns", "open", 29959);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1130,7 +1124,7 @@ async fn api_discover_dns() {
 
 #[tokio::test]
 async fn api_discover_local() {
-    let mut inst = Instance::new("disc-local", "open", 29970, 29969);
+    let mut inst = Instance::new("disc-local", "open", 29969);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1154,7 +1148,7 @@ async fn api_discover_local() {
 
 #[tokio::test]
 async fn api_key_rotation() {
-    let mut inst = Instance::new("rotate", "open", 29980, 29979);
+    let mut inst = Instance::new("rotate", "open", 29979);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1199,7 +1193,7 @@ async fn api_key_rotation() {
 
 #[tokio::test]
 async fn export_import_wrong_passphrase() {
-    let mut inst = Instance::new("bad-pass", "open", 29990, 29989);
+    let mut inst = Instance::new("bad-pass", "open", 29989);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1243,7 +1237,7 @@ async fn export_import_wrong_passphrase() {
 
 #[tokio::test]
 async fn config_persists_across_restart() {
-    let mut inst = Instance::new("cfg-persist", "open", 30010, 30009);
+    let mut inst = Instance::new("cfg-persist", "open", 30009);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1285,7 +1279,7 @@ async fn config_persists_across_restart() {
 
 #[tokio::test]
 async fn api_get_thread_not_found() {
-    let mut inst = Instance::new("thread", "open", 30020, 30019);
+    let mut inst = Instance::new("thread", "open", 30019);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1311,7 +1305,7 @@ async fn api_get_thread_not_found() {
 
 #[tokio::test]
 async fn cli_send_to_unreachable() {
-    let mut inst = Instance::new("cli-send", "open", 30040, 30039);
+    let mut inst = Instance::new("cli-send", "open", 30039);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1340,7 +1334,7 @@ async fn cli_send_to_unreachable() {
 
 #[tokio::test]
 async fn cli_block_unblock() {
-    let mut inst = Instance::new("cli-block", "open", 30050, 30049);
+    let mut inst = Instance::new("cli-block", "open", 30049);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1386,8 +1380,8 @@ async fn cli_block_unblock() {
 
 #[tokio::test]
 async fn two_daemons_thread_preserved() {
-    let mut alice = Instance::new("alice-rx", "open", 30110, 30109);
-    let mut bob = Instance::new("bob-rx", "open", 30120, 30119);
+    let mut alice = Instance::new("alice-rx", "open", 30109);
+    let mut bob = Instance::new("bob-rx", "open", 30119);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -1446,8 +1440,8 @@ async fn two_daemons_thread_preserved() {
 
 #[tokio::test]
 async fn two_daemons_streaming() {
-    let mut alice = Instance::new("alice-st", "open", 30130, 30129);
-    let mut bob = Instance::new("bob-st", "open", 30140, 30139);
+    let mut alice = Instance::new("alice-st", "open", 30129);
+    let mut bob = Instance::new("bob-st", "open", 30139);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -1515,8 +1509,8 @@ async fn two_daemons_streaming() {
 
 #[tokio::test]
 async fn approval_approve_then_send() {
-    let mut alice = Instance::new("alice-apv", "open", 30150, 30149);
-    let mut bob = Instance::new("bob-apv", "approval", 30160, 30159);
+    let mut alice = Instance::new("alice-apv", "open", 30149);
+    let mut bob = Instance::new("bob-apv", "approval", 30159);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -1580,8 +1574,8 @@ async fn approval_approve_then_send() {
 
 #[tokio::test]
 async fn approval_deny() {
-    let mut alice = Instance::new("alice-deny", "open", 30170, 30169);
-    let mut bob = Instance::new("bob-deny", "approval", 30180, 30179);
+    let mut alice = Instance::new("alice-deny", "open", 30169);
+    let mut bob = Instance::new("bob-deny", "approval", 30179);
     alice.start();
     bob.start();
     sleep(API_STARTUP_DELAY).await;
@@ -1661,7 +1655,7 @@ async fn approval_deny() {
 
 #[tokio::test]
 async fn export_empty_passphrase_fails() {
-    let mut inst = Instance::new("empty-pass", "open", 30210, 30209);
+    let mut inst = Instance::new("empty-pass", "open", 30209);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1684,7 +1678,7 @@ async fn export_empty_passphrase_fails() {
 
 #[tokio::test]
 async fn cli_clear_logs() {
-    let mut inst = Instance::new("cli-clr", "open", 30220, 30219);
+    let mut inst = Instance::new("cli-clr", "open", 30219);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1700,7 +1694,7 @@ async fn cli_clear_logs() {
 
 #[tokio::test]
 async fn api_revoke_approved_peer() {
-    let mut inst = Instance::new("api-revoke", "approval", 30240, 30239);
+    let mut inst = Instance::new("api-revoke", "approval", 30239);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1761,7 +1755,7 @@ async fn api_revoke_approved_peer() {
 
 #[tokio::test]
 async fn api_message_history_empty() {
-    let mut inst = Instance::new("api-hist-e", "open", 30260, 30259);
+    let mut inst = Instance::new("api-hist-e", "open", 30259);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1781,7 +1775,7 @@ async fn api_message_history_empty() {
 
 #[tokio::test]
 async fn api_message_history_with_limit() {
-    let mut inst = Instance::new("api-hist-l", "open", 30280, 30279);
+    let mut inst = Instance::new("api-hist-l", "open", 30279);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1803,7 +1797,7 @@ async fn api_message_history_with_limit() {
 
 #[tokio::test]
 async fn api_handler_crud() {
-    let mut inst = Instance::new("api-handler", "open", 30290, 30289);
+    let mut inst = Instance::new("api-handler", "open", 30289);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1911,7 +1905,7 @@ async fn api_handler_crud() {
 
 #[tokio::test]
 async fn api_handler_reload() {
-    let mut inst = Instance::new("api-handler-rl", "open", 30292, 30291);
+    let mut inst = Instance::new("api-handler-rl", "open", 30291);
     inst.start();
     sleep(API_STARTUP_DELAY).await;
 
@@ -1930,7 +1924,7 @@ async fn api_handler_reload() {
 
 #[test]
 fn whoami_shows_agent_info() {
-    let inst = Instance::new("whoami-test", "approval", 19810, 19809);
+    let inst = Instance::new("whoami-test", "approval", 19809);
     inst.cmd()
         .arg("whoami")
         .assert()
@@ -1942,7 +1936,7 @@ fn whoami_shows_agent_info() {
 
 #[test]
 fn config_show() {
-    let inst = Instance::new("config-show", "approval", 19812, 19811);
+    let inst = Instance::new("config-show", "approval", 19811);
     inst.cmd()
         .args(["config", "show"])
         .assert()
@@ -1953,7 +1947,7 @@ fn config_show() {
 
 #[test]
 fn config_set_connection_mode() {
-    let inst = Instance::new("config-set", "approval", 19814, 19813);
+    let inst = Instance::new("config-set", "approval", 19813);
     inst.cmd()
         .args(["config", "set", "connection_mode", "open"])
         .assert()
@@ -1969,7 +1963,7 @@ fn config_set_connection_mode() {
 
 #[test]
 fn config_set_invalid_mode() {
-    let inst = Instance::new("config-inv", "approval", 19816, 19815);
+    let inst = Instance::new("config-inv", "approval", 19815);
     inst.cmd()
         .args(["config", "set", "connection_mode", "bogus"])
         .assert()
@@ -1978,7 +1972,7 @@ fn config_set_invalid_mode() {
 
 #[test]
 fn config_set_unknown_key() {
-    let inst = Instance::new("config-unk", "approval", 19818, 19817);
+    let inst = Instance::new("config-unk", "approval", 19817);
     inst.cmd()
         .args(["config", "set", "nonexistent", "value"])
         .assert()
@@ -1987,7 +1981,7 @@ fn config_set_unknown_key() {
 
 #[test]
 fn handler_add_llm_requires_model() {
-    let inst = Instance::new("llm-nomodel", "approval", 19820, 19819);
+    let inst = Instance::new("llm-nomodel", "approval", 19819);
     inst.cmd()
         .args(["handler", "add", "chat", "--provider", "openai"])
         .assert()
@@ -1997,7 +1991,7 @@ fn handler_add_llm_requires_model() {
 
 #[test]
 fn handler_add_rejects_both_command_and_provider() {
-    let inst = Instance::new("llm-both", "approval", 19822, 19821);
+    let inst = Instance::new("llm-both", "approval", 19821);
     inst.cmd()
         .args([
             "handler",
@@ -2017,7 +2011,7 @@ fn handler_add_rejects_both_command_and_provider() {
 
 #[test]
 fn handler_add_rejects_invalid_provider() {
-    let inst = Instance::new("llm-badprov", "approval", 19824, 19823);
+    let inst = Instance::new("llm-badprov", "approval", 19823);
     inst.cmd()
         .args([
             "handler",
@@ -2037,7 +2031,7 @@ fn handler_add_rejects_invalid_provider() {
 
 #[test]
 fn handler_add_llm_succeeds() {
-    let inst = Instance::new("llm-ok", "approval", 19826, 19825);
+    let inst = Instance::new("llm-ok", "approval", 19825);
     inst.cmd()
         .args([
             "handler",
@@ -2148,4 +2142,90 @@ fn listen_command_removed() {
         .arg("listen")
         .assert()
         .failure();
+}
+
+// ── Port multiplexer ─────────────────────────────────────────
+
+/// Verify that both HTTP (API) and TLS (toq protocol) work on the same port.
+/// HTTP: hit /v1/health and get a response.
+/// TLS: send a message from alice to bob (proves toq handshake works on same port).
+#[tokio::test]
+async fn multiplexed_port_serves_http_and_toq() {
+    let mut alice = Instance::new("alice-mux", "open", 30310);
+    let mut bob = Instance::new("bob-mux", "open", 30320);
+    alice.start();
+    bob.start();
+    sleep(API_STARTUP_DELAY).await;
+
+    let client = Client::new();
+
+    // HTTP path: health check on the same port that accepts toq connections
+    let health: String = client
+        .get(alice.api_url("/v1/health"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(health.contains("ok"), "HTTP health check failed: {health}");
+
+    let bob_health: String = client
+        .get(bob.api_url("/v1/health"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        bob_health.contains("ok"),
+        "HTTP health check failed on bob: {bob_health}"
+    );
+
+    // TLS path: send a toq message from alice to bob on the same port
+    let sse_handle = bob.spawn_sse_listener(10);
+    sleep(Duration::from_millis(500)).await;
+
+    let send_resp: serde_json::Value = client
+        .post(format!("{}?wait=true", alice.api_url("/v1/messages")))
+        .json(&serde_json::json!({
+            "to": "toq://127.0.0.1:30320/bob-mux",
+            "body": {"text": "multiplexer test"}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        send_resp["status"].as_str().unwrap_or(""),
+        "delivered",
+        "toq send failed on multiplexed port: {send_resp}"
+    );
+
+    sleep(Duration::from_secs(3)).await;
+    sse_handle.abort();
+    let sse_output = sse_handle.await.unwrap_or_default();
+    assert!(
+        sse_output.contains("multiplexer test"),
+        "bob should have received the message on multiplexed port: {sse_output}"
+    );
+
+    // HTTP path again after TLS traffic: confirm API still works
+    let status: serde_json::Value = client
+        .get(bob.api_url("/v1/status"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["status"].as_str().unwrap_or(""), "running");
+    assert!(status["messages_in"].as_u64().unwrap_or(0) >= 1);
+
+    alice.stop();
+    bob.stop();
 }

@@ -32,7 +32,6 @@ pub struct Config {
     pub log_max_size_mb: u32,
     pub thread_cleanup_days: u32,
     pub mdns_enabled: bool,
-    pub api_port: u16,
     pub adapter: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_history_limit: Option<usize>,
@@ -86,7 +85,6 @@ impl Default for Config {
             log_max_size_mb: LOG_MAX_SIZE_MB,
             thread_cleanup_days: THREAD_CLEANUP_DAYS,
             mdns_enabled: false,
-            api_port: DEFAULT_API_PORT,
             adapter: "http".into(),
             message_history_limit: None,
             adapter_http: None,
