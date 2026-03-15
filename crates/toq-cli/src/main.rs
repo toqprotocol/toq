@@ -873,9 +873,9 @@ fn run_setup(
 
     let connection_mode = if non_interactive {
         let mode = cli_connection_mode.unwrap_or_else(|| "approval".to_string());
-        if !["open", "allowlist", "approval"].contains(&mode.as_str()) {
+        if !["open", "allowlist", "approval", "dns-verified"].contains(&mode.as_str()) {
             return Err(format!(
-                "Invalid connection mode '{mode}': must be open, allowlist, or approval"
+                "Invalid connection mode '{mode}': must be open, allowlist, approval, or dns-verified"
             )
             .into());
         }
@@ -1569,8 +1569,9 @@ fn run_config(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
                 "host" => config.host = value.clone(),
                 "port" => config.port = value.parse().map_err(|_| "invalid port")?,
                 "connection_mode" => {
-                    if !["open", "allowlist", "approval"].contains(&value.as_str()) {
-                        return Err("must be open, allowlist, or approval".into());
+                    if !["open", "allowlist", "approval", "dns-verified"].contains(&value.as_str())
+                    {
+                        return Err("must be open, allowlist, approval, or dns-verified".into());
                     }
                     config.connection_mode = value.clone();
                 }
