@@ -2096,3 +2096,56 @@ fn init_omits_host_when_localhost() {
     let config = std::fs::read_to_string(dir.path().join(".toq/config.toml")).unwrap();
     assert!(!config.contains("host ="));
 }
+
+#[test]
+fn listen_auto_generates_keys_after_init() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Init only (no setup, no keys)
+    let mut cmd = assert_cmd::Command::from_std(toq_cmd());
+    cmd.args(["init", "--name", "alice", "--port", "19050"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let keys_dir = dir.path().join(".toq/keys");
+    assert!(!keys_dir.exists(), "keys should not exist after init");
+
+    // Listen should auto-generate keys and start (kill after 1s)
+    let mut child = StdCommand::new(toq_bin())
+        .args(["listen"])
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn toq listen");
+
+    std::thread::sleep(Duration::from_secs(1));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(keys_dir.exists(), "keys should exist after listen");
+    assert!(
+        keys_dir.join("identity.key").exists(),
+        "identity key should be generated"
+    );
+    assert!(
+        keys_dir.join("tls_cert.pem").exists(),
+        "TLS cert should be generated"
+    );
+
+    kill_port(19050);
+}
+
+#[test]
+fn listen_fails_without_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut cmd = assert_cmd::Command::from_std(toq_cmd());
+    cmd.env("HOME", dir.path())
+        .current_dir(dir.path())
+        .arg("listen")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No workspace found"));
+}

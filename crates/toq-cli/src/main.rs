@@ -2344,7 +2344,22 @@ async fn run_send(
 }
 
 async fn run_listen() -> Result<(), Box<dyn std::error::Error>> {
-    require_setup();
+    let config_exists = Config::default_path().exists();
+    if !config_exists {
+        eprintln!("No workspace found");
+        eprintln!("  Run `toq init` to create one, or `toq setup` for guided setup");
+        std::process::exit(1);
+    }
+
+    let keys_exist = keystore::identity_key_path().exists();
+    if !keys_exist {
+        let keypair = Keypair::generate();
+        keystore::save_keypair(&keypair, &keystore::identity_key_path())?;
+        keystore::generate_and_save_tls_cert(
+            &keystore::tls_cert_path(),
+            &keystore::tls_key_path(),
+        )?;
+    }
 
     let config = Config::load(&Config::default_path())?;
     let keypair = keystore::load_keypair(&keystore::identity_key_path())?;
