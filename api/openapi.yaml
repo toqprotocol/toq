@@ -985,8 +985,12 @@ components:
                 type: string
           description: |
             Target agent address (string) or multiple addresses (array).
+            Accepts toq addresses (toq://host/name) or HTTPS URLs for
+            A2A outbound (the daemon probes for an agent card).
             When an array, each recipient gets an independent thread.
-          example: "toq://peer.example.com/recipe-agent"
+          examples:
+            - "toq://peer.example.com/recipe-agent"
+            - "https://a2a-agent.example.com"
         body:
           description: Message content. Structure depends on content_type.
           example: { "text": "What can you make with eggs?" }
@@ -1004,6 +1008,9 @@ components:
           type: boolean
           default: false
           description: Close the thread after sending this message.
+        a2a_auth:
+          type: string
+          description: Bearer token for outbound A2A sends. Only used when `to` is an HTTPS URL and the remote agent requires authentication.
 
     SendMessageResponse:
       type: object
@@ -1018,12 +1025,19 @@ components:
           format: uuid
         status:
           type: string
-          enum: [queued, delivered]
+          enum: [queued, delivered, sent]
         thread_id:
           type: string
         timestamp:
           type: string
           format: date-time
+        a2a:
+          type: boolean
+          description: True when the message was sent via A2A protocol.
+        reply:
+          type: string
+          nullable: true
+          description: Reply text from the remote A2A agent (only for A2A sends).
 
     MultiSendResult:
       type: object
@@ -1700,6 +1714,7 @@ components:
                 - message_too_large
                 - invalid_passphrase
                 - invalid_config
+                - a2a_send_failed
             message:
               type: string
 
