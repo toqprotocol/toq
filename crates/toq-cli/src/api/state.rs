@@ -382,6 +382,8 @@ pub struct ApiState {
     pub history: Arc<Mutex<MessageHistory>>,
     pub handler_manager: Arc<Mutex<HandlerManager>>,
     pub a2a: crate::a2a::handlers::A2aState,
+    /// Outbound A2A client (shared, with agent card cache).
+    pub a2a_client: crate::a2a::client::A2aClient,
     /// Pending A2A reply channels keyed by thread_id. When a handler sends a
     /// reply on a thread that has a pending channel, the reply is routed through
     /// the channel instead of being sent via the toq protocol.
@@ -431,6 +433,7 @@ impl ApiState {
             history: Arc::new(Mutex::new(history)),
             handler_manager: Arc::new(Mutex::new(HandlerManager::new(handlers, api_url))),
             a2a: crate::a2a::handlers::A2aState::new(),
+            a2a_client: crate::a2a::client::A2aClient::new(),
             a2a_reply_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }

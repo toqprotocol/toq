@@ -301,6 +301,11 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage A2A protocol compatibility.
+    A2a {
+        #[command(subcommand)]
+        action: A2aAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -314,6 +319,20 @@ enum ConfigAction {
         /// New value
         value: String,
     },
+}
+
+#[derive(Subcommand)]
+enum A2aAction {
+    /// Enable A2A compatibility.
+    Enable {
+        /// Bearer token for authentication. Omit for open access.
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Disable A2A compatibility.
+    Disable,
+    /// Show A2A status.
+    Status,
 }
 
 #[derive(Parser)]
@@ -458,6 +477,7 @@ async fn main() {
         Commands::Logs { follow } => run_logs(follow),
         Commands::Handler { action } => run_handler(action).await,
         Commands::Config { action } => run_config(action),
+        Commands::A2a { action } => run_a2a(action),
     };
 
     if let Err(e) = result {
@@ -1604,6 +1624,54 @@ fn run_config(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
             }
             config.save(&path)?;
             println!("{key} = {value}");
+        }
+    }
+    Ok(())
+}
+
+fn run_a2a(action: A2aAction) -> Result<(), Box<dyn std::error::Error>> {
+    require_setup();
+    let path = Config::default_path();
+    let mut config = Config::load(&path)?;
+    match action {
+        A2aAction::Enable { key } => {
+            config.a2a_enabled = true;
+            if let Some(k) = key {
+                if k.is_empty() {
+                    return Err("API key cannot be empty".into());
+                }
+                config.a2a_api_key = Some(k);
+            }
+            config.save(&path)?;
+            println!("A2A enabled");
+            if config.a2a_api_key.is_some() {
+                println!("  auth: Bearer token required");
+            } else {
+                println!("  auth: open access (no key set)");
+            }
+            println!("Restart the daemon for changes to take effect: toq down && toq up");
+        }
+        A2aAction::Disable => {
+            config.a2a_enabled = false;
+            config.save(&path)?;
+            println!("A2A disabled");
+            println!("Restart the daemon for changes to take effect: toq down && toq up");
+        }
+        A2aAction::Status => {
+            if config.a2a_enabled {
+                println!("A2A: enabled");
+                if config.a2a_api_key.is_some() {
+                    println!("  auth: Bearer token configured");
+                } else {
+                    println!("  auth: open access");
+                }
+                if let Some(ref url) = config.a2a_public_url {
+                    println!("  public URL: {url}");
+                }
+            } else {
+                println!("A2A: disabled");
+                println!("  enable with: toq a2a enable");
+            }
         }
     }
     Ok(())

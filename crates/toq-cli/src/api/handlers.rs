@@ -113,7 +113,14 @@ pub async fn send_message(
     if is_single {
         let target = &recipients[0];
         if target.starts_with("https://") || target.starts_with("http://") {
-            return send_via_a2a(&state, target, &req.body, &req.thread_id).await;
+            return send_via_a2a(
+                &state,
+                target,
+                &req.body,
+                &req.thread_id,
+                req.a2a_auth.as_deref(),
+            )
+            .await;
         }
     }
 
@@ -501,6 +508,7 @@ async fn send_via_a2a(
     target_url: &str,
     body: &Option<serde_json::Value>,
     thread_id: &Option<String>,
+    auth_token: Option<&str>,
 ) -> Response {
     let text = body
         .as_ref()
@@ -516,8 +524,11 @@ async fn send_via_a2a(
         );
     }
 
-    let client = crate::a2a::client::A2aClient::new();
-    match client.send_text(target_url, text, None).await {
+    match state
+        .a2a_client
+        .send_text(target_url, text, auth_token)
+        .await
+    {
         Ok(result) => {
             state.messages_out.fetch_add(1, Ordering::Relaxed);
             let status = if result.state.contains("completed") || result.state.contains("COMPLETED")

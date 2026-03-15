@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex};
 const AGENT_CARD_PATH: &str = "/.well-known/agent-card.json";
 const A2A_SEND_TIMEOUT_SECS: u64 = 30;
 
-/// Check if a URL targets a private, loopback, or link-local address.
-/// Blocks SSRF to cloud metadata endpoints (169.254.x.x) and internal services.
+/// Check if a URL targets a cloud metadata or link-local address.
+/// Only the local API (localhost) can trigger outbound requests, so
+/// private networks are allowed (the user may have internal A2A agents).
+/// Cloud metadata endpoints are blocked to prevent credential leaks.
 fn is_blocked_url(url: &str) -> bool {
     let host = url
         .trim_start_matches("https://")
@@ -20,13 +22,9 @@ fn is_blocked_url(url: &str) -> bool {
         .next()
         .unwrap_or("");
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => v4.is_link_local() || v4.is_broadcast(),
-            std::net::IpAddr::V6(v6) => v6.is_loopback(),
-        };
+    if let Ok(std::net::IpAddr::V4(v4)) = host.parse::<std::net::IpAddr>() {
+        return v4.is_link_local();
     }
-    // Block metadata hostnames
     host == "metadata.google.internal" || host == "metadata.goog"
 }
 
@@ -41,6 +39,7 @@ impl A2aClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(A2A_SEND_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build HTTP client");
         Self {

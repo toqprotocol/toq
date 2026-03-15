@@ -20,6 +20,8 @@ pub struct SendMessageRequest {
     pub content_type: Option<String>,
     #[serde(default)]
     pub close_thread: bool,
+    /// Bearer token for outbound A2A sends (when `to` is an HTTPS URL).
+    pub a2a_auth: Option<String>,
 }
 
 impl Recipient {
