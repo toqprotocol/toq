@@ -1333,7 +1333,7 @@ components:
           type: boolean
         version:
           type: string
-          example: "0.1.0-dev.1"
+          example: "0.1.0-dev.9"
         public_key:
           type: string
           example: "ed25519:abc123..."
