@@ -722,7 +722,8 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
 
     println!("Initialized workspace in .toq/");
     println!("  Agent: {name}");
-    println!("  Port: {port}");
+    println!("  Host:  {host}");
+    println!("  Port:  {port}");
     println!("\nRun `toq up` to start the agent");
     Ok(())
 }
