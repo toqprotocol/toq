@@ -52,9 +52,9 @@ pub fn is_terminal(state: &TaskState) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Role {
-    #[serde(rename = "ROLE_USER")]
+    #[serde(rename = "ROLE_USER", alias = "user")]
     User,
-    #[serde(rename = "ROLE_AGENT")]
+    #[serde(rename = "ROLE_AGENT", alias = "agent")]
     Agent,
 }
 
