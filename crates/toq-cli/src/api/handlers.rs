@@ -1567,11 +1567,7 @@ pub async fn export_backup(Json(req): Json<BackupExportRequest>) -> Response {
     let key_bytes = match crate::derive_key(req.passphrase.as_bytes(), &salt) {
         Ok(k) => k,
         Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INVALID_REQUEST,
-                e,
-            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, ERR_INVALID_REQUEST, e);
         }
     };
     let cipher = match Aes256Gcm::new_from_slice(&key_bytes) {
