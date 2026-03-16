@@ -406,6 +406,7 @@ async fn main() {
 
     // Set config dir env var before any config resolution
     if let Some(ref dir) = cli.config_dir {
+        // SAFETY: called before any threads are spawned (tokio runtime not yet started).
         unsafe { std::env::set_var(toq_core::constants::TOQ_CONFIG_DIR_ENV, dir) };
     }
 
@@ -473,7 +474,7 @@ async fn main() {
         Commands::Discover { ref domain } => run_discover(domain).await,
         Commands::Whoami => run_whoami(),
         Commands::Agents => run_agents(),
-        Commands::Upgrade => run_upgrade(),
+        Commands::Upgrade => run_upgrade().await,
         Commands::Logs { follow } => run_logs(follow),
         Commands::Handler { action } => run_handler(action).await,
         Commands::Config { action } => run_config(action),
@@ -731,7 +732,16 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
     fs::write(toq_dir.join(".gitignore"), gitignore)?;
 
     // Write empty handlers.toml
-    fs::write(toq_dir.join("handlers.toml"), "")?;
+    fs::write(
+        toq_dir.join("handlers.toml"),
+        "# toq message handlers\n# Register handlers with: toq handler add <name> --command <cmd>\n\nhandlers = []\n",
+    )?;
+
+    // Write empty permissions.toml
+    fs::write(
+        toq_dir.join("permissions.toml"),
+        "# toq permission rules\n# Manage with: toq approve, toq block, toq revoke\n\napproved = []\nblocked = []\npending = []\n",
+    )?;
 
     println!("Initialized workspace in .toq/");
     println!("  Agent: {name}");
@@ -1522,6 +1532,7 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     remove_pid();
     let _ = fs::remove_file(state_path());
+    unregister_agent(&config.agent_name);
 
     // Persist policy engine state
     {
@@ -2738,12 +2749,12 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
     let current = env!("CARGO_PKG_VERSION");
     println!("toq v{current}");
 
     println!("Checking for updates...");
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .user_agent("toq")
         .build()?;
@@ -2751,9 +2762,10 @@ fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
     match client
         .get("https://api.github.com/repos/toqprotocol/toq/releases/latest")
         .send()
+        .await
     {
         Ok(resp) if resp.status().is_success() => {
-            let body: serde_json::Value = resp.json()?;
+            let body: serde_json::Value = resp.json().await?;
             if let Some(tag) = body["tag_name"].as_str() {
                 let latest = tag.trim_start_matches('v');
                 if latest != current {

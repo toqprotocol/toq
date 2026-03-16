@@ -28,7 +28,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 inquire = "0.9"
 rand = "0.8"
 regex = "1"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json"] }
 url = "2"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
