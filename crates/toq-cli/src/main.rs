@@ -715,7 +715,7 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
     };
     let config_content = format!(
         "# toq workspace config\n\
-         # Docs: https://toq.dev/docs/getting-started/overview/\n\
+         # Docs: https://toq.dev/getting-started/overview/\n\
          \n\
          agent_name = \"{name}\"\n\
          {host_line}\
@@ -727,7 +727,7 @@ fn run_init(name: &str, host: &str, port: &str) -> Result<(), Box<dyn std::error
     fs::write(toq_dir.join("config.toml"), config_content)?;
 
     // Write .gitignore
-    let gitignore = "keys/\npeer_store.json\nmessages.jsonl\nlogs/\n";
+    let gitignore = "keys/\npeers.json\nmessages.jsonl\nlogs/\n";
     fs::write(toq_dir.join(".gitignore"), gitignore)?;
 
     // Write empty handlers.toml
@@ -1288,6 +1288,9 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
     let http_router = api::router(api_state.clone(), config.a2a_enabled);
     let http_remote_router = api::remote_router(api_state, config.a2a_enabled);
 
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
+
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -1501,6 +1504,11 @@ async fn run_up(foreground: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("toq down (signal)");
+                println!("\ntoq down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("toq down (SIGTERM)");
                 println!("\ntoq down");
                 break;
             }
@@ -3077,7 +3085,7 @@ mod tests {
 
     #[test]
     fn init_gitignore_content() {
-        let gitignore = "keys/\npeer_store.json\nmessages.jsonl\nlogs/\n";
+        let gitignore = "keys/\npeers.json\nmessages.jsonl\nlogs/\n";
         assert!(gitignore.contains("keys/"));
         assert!(gitignore.contains("logs/"));
         assert!(!gitignore.contains("identity.key"));
