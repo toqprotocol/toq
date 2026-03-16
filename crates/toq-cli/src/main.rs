@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::prelude::*;
-use sha2::{Digest, Sha256};
 
 use toq_core::adapter::AgentMessage;
 
@@ -70,6 +69,16 @@ fn dim(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Derive a 32-byte encryption key from a passphrase and salt using Argon2id.
+fn derive_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], String> {
+    use argon2::Argon2;
+    let mut key = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(passphrase, salt, &mut key)
+        .map_err(|e| format!("key derivation failed: {e}"))?;
+    Ok(key)
 }
 
 fn centered_logo() -> String {
@@ -2506,7 +2515,9 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err("passphrase cannot be empty".into());
     }
 
-    let key_bytes = Sha256::digest(passphrase.as_bytes());
+    let mut salt = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+    let key_bytes = derive_key(passphrase.as_bytes(), &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
     let mut nonce_bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
@@ -2517,6 +2528,8 @@ fn run_export(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let output = serde_json::json!({
         "encrypted": true,
+        "kdf": "argon2id",
+        "salt": BASE64_STANDARD.encode(salt),
         "nonce": BASE64_STANDARD.encode(nonce_bytes),
         "data": BASE64_STANDARD.encode(&ciphertext),
     });
@@ -2539,7 +2552,14 @@ fn run_import(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .without_confirmation()
             .prompt()?;
 
-        let key_bytes = Sha256::digest(passphrase.as_bytes());
+        let key_bytes = if wrapper.get("kdf").and_then(|v| v.as_str()) == Some("argon2id") {
+            let salt = BASE64_STANDARD.decode(wrapper["salt"].as_str().ok_or("missing salt")?)?;
+            derive_key(passphrase.as_bytes(), &salt)?
+        } else {
+            // Legacy SHA-256 fallback for old backups
+            use sha2::{Digest, Sha256};
+            Sha256::digest(passphrase.as_bytes()).into()
+        };
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)?;
         let nonce_bytes =
             BASE64_STANDARD.decode(wrapper["nonce"].as_str().ok_or("missing nonce")?)?;

@@ -1501,7 +1501,6 @@ pub async fn export_backup(Json(req): Json<BackupExportRequest>) -> Response {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     use base64::prelude::*;
-    use sha2::{Digest, Sha256};
 
     if req.passphrase.is_empty() {
         return error_response(
@@ -1563,7 +1562,18 @@ pub async fn export_backup(Json(req): Json<BackupExportRequest>) -> Response {
     });
 
     let plaintext = serde_json::to_string_pretty(&bundle).unwrap_or_default();
-    let key_bytes = Sha256::digest(req.passphrase.as_bytes());
+    let mut salt = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+    let key_bytes = match crate::derive_key(req.passphrase.as_bytes(), &salt) {
+        Ok(k) => k,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INVALID_REQUEST,
+                e,
+            );
+        }
+    };
     let cipher = match Aes256Gcm::new_from_slice(&key_bytes) {
         Ok(c) => c,
         Err(e) => {
@@ -1583,6 +1593,8 @@ pub async fn export_backup(Json(req): Json<BackupExportRequest>) -> Response {
         Ok(ciphertext) => {
             let output = serde_json::json!({
                 "encrypted": true,
+                "kdf": "argon2id",
+                "salt": BASE64_STANDARD.encode(salt),
                 "nonce": BASE64_STANDARD.encode(nonce_bytes),
                 "data": BASE64_STANDARD.encode(&ciphertext),
             });
@@ -1602,7 +1614,6 @@ pub async fn import_backup(Json(req): Json<BackupImportRequest>) -> Response {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     use base64::prelude::*;
-    use sha2::{Digest, Sha256};
 
     let wrapper: serde_json::Value = match serde_json::from_str(&req.data) {
         Ok(v) => v,
@@ -1617,7 +1628,35 @@ pub async fn import_backup(Json(req): Json<BackupImportRequest>) -> Response {
 
     let bundle: serde_json::Value =
         if wrapper.get("encrypted").and_then(|v| v.as_bool()) == Some(true) {
-            let key_bytes = Sha256::digest(req.passphrase.as_bytes());
+            let key_bytes = if wrapper.get("kdf").and_then(|v| v.as_str()) == Some("argon2id") {
+                let salt = match wrapper["salt"]
+                    .as_str()
+                    .and_then(|s| BASE64_STANDARD.decode(s).ok())
+                {
+                    Some(b) => b,
+                    None => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            ERR_INVALID_REQUEST,
+                            "Missing salt in backup",
+                        );
+                    }
+                };
+                match crate::derive_key(req.passphrase.as_bytes(), &salt) {
+                    Ok(k) => k.to_vec(),
+                    Err(e) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            ERR_INVALID_REQUEST,
+                            e,
+                        );
+                    }
+                }
+            } else {
+                // Legacy SHA-256 fallback for old backups
+                use sha2::{Digest, Sha256};
+                Sha256::digest(req.passphrase.as_bytes()).to_vec()
+            };
             let cipher = match Aes256Gcm::new_from_slice(&key_bytes) {
                 Ok(c) => c,
                 Err(_) => {
