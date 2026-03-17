@@ -405,10 +405,23 @@ enum HandlerAction {
 
 #[tokio::main]
 async fn main() {
-    // Show logo only when no args (not on subcommand --help)
+    // Show logo when no args or when --help is requested
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
-        println!("{}", gold(&centered_logo()));
+        println!("\n{}", gold(&centered_logo()));
+        println!("{ABOUT}");
+        let logo_width = centered_logo().lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let ver_pad = " ".repeat((logo_width.saturating_sub(ver.len())) / 2);
+        println!("{ver_pad}{ver}");
+        let help_msg = format!("Run {} for usage", gold("toq --help"));
+        let help_plain = "Run toq --help for usage";
+        let help_pad = " ".repeat((logo_width.saturating_sub(help_plain.len())) / 2);
+        println!("\n{help_pad}{help_msg}");
+        std::process::exit(0);
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
+        println!("\n{}", gold(&centered_logo()));
     }
 
     let cli = Cli::parse();
