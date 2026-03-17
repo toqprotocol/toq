@@ -79,6 +79,13 @@ where
 
     // Step 3: receive receiver credentials
     let data = framing::read_length_prefixed(stream, MAX_HANDSHAKE_PAYLOAD).await?;
+    // Check if the response is an error
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
+        if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+            return Err(Error::ConnectionRejected(err.to_string()));
+        }
+    }
+
     let recv_creds: ReceiverCredentials =
         serde_json::from_slice(&data).map_err(|e| Error::InvalidEnvelope(e.to_string()))?;
 
@@ -139,10 +146,13 @@ where
     // Validate target agent name if provided
     if let Some(ref target) = init_creds.target_agent {
         if target != &address.agent_name {
-            return Err(Error::InvalidEnvelope(format!(
+            let err_msg = format!(
                 "agent '{}' not found on this endpoint (this is '{}')",
                 target, address.agent_name,
-            )));
+            );
+            let err_resp = serde_json::json!({ "error": err_msg });
+            let _ = framing::write_length_prefixed(stream, &serde_json::to_vec(&err_resp).unwrap_or_default()).await;
+            return Err(Error::ConnectionRejected(err_msg));
         }
     }
 
