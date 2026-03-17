@@ -8,7 +8,8 @@
 
 <p align="center">
   <a href="https://github.com/toqprotocol/toq/actions"><img src="https://github.com/toqprotocol/toq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://crates.io/crates/toq"><img src="https://img.shields.io/crates/v/toq.svg" alt="crates.io"></a>
+  <a href="https://crates.io/crates/toq-core"><img src="https://img.shields.io/crates/v/toq-core.svg?label=toq-core" alt="crates.io"></a>
+  <a href="https://crates.io/crates/toq-cli"><img src="https://img.shields.io/crates/v/toq-cli.svg?label=toq-cli" alt="crates.io"></a>
   <a href="https://github.com/toqprotocol/toq/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 </p>
 
