@@ -410,7 +410,11 @@ async fn main() {
     if args.len() == 1 {
         println!("\n{}", gold(&centered_logo()));
         println!("{ABOUT}");
-        let logo_width = centered_logo().lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        let logo_width = centered_logo()
+            .lines()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
         let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
         let ver_pad = " ".repeat((logo_width.saturating_sub(ver.len())) / 2);
         println!("{ver_pad}{ver}");
@@ -420,7 +424,10 @@ async fn main() {
         println!("\n{help_pad}{help_msg}");
         std::process::exit(0);
     }
-    if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
+    if args
+        .iter()
+        .any(|a| a == "--help" || a == "-h" || a == "help")
+    {
         println!("\n{}", gold(&centered_logo()));
     }
 
