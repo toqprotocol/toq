@@ -175,6 +175,7 @@ pub async fn connect_to_peer(
     address: &Address,
     local_card: &AgentCard,
     local_features: &Features,
+    target_agent: Option<&str>,
 ) -> Result<(ConnectionInfo, tokio_rustls::client::TlsStream<TcpStream>), Error> {
     // TCP connect (with timeout)
     let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(target))
@@ -191,7 +192,7 @@ pub async fn connect_to_peer(
     // Handshake (with timeout)
     let hs = timeout(
         HANDSHAKE_TIMEOUT,
-        handshake::initiate(&mut tls_stream, keypair, address),
+        handshake::initiate(&mut tls_stream, keypair, address, target_agent),
     )
     .await
     .map_err(|_| Error::Io("handshake timeout".into()))??;
@@ -252,6 +253,7 @@ pub async fn ping_peer(
     target: &str,
     keypair: &Keypair,
     address: &Address,
+    target_agent: Option<&str>,
 ) -> Result<PingResult, Error> {
     let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(target))
         .await
@@ -265,7 +267,7 @@ pub async fn ping_peer(
 
     let hs = timeout(
         HANDSHAKE_TIMEOUT,
-        handshake::initiate(&mut tls_stream, keypair, address),
+        handshake::initiate(&mut tls_stream, keypair, address, target_agent),
     )
     .await
     .map_err(|_| Error::Io("handshake timeout".into()))??;

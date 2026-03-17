@@ -366,7 +366,7 @@ async fn handshake_initiate_accept() {
     let (client_result, server_result) = tokio::join!(
         async {
             let mut stream = tokio::io::join(&mut client_read, &mut client_write);
-            handshake::initiate(&mut stream, &client_kp, &client_addr).await
+            handshake::initiate(&mut stream, &client_kp, &client_addr, None).await
         },
         async {
             let mut stream = tokio::io::join(&mut server_read, &mut server_write);
@@ -3096,6 +3096,7 @@ async fn approval_rejected_through_negotiation() {
         &client_addr,
         &client_card,
         &features,
+        None,
     )
     .await;
 

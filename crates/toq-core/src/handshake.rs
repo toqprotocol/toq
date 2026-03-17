@@ -16,6 +16,7 @@ pub struct HandshakeResult {
     pub peer_address: Address,
     pub session_id: String,
     pub rotation_proof: Option<String>,
+    pub target_agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -26,6 +27,8 @@ struct InitiatorCredentials {
     address: Address,
     protocol_version: String,
     rotation_proof: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,6 +53,7 @@ pub async fn initiate<S>(
     stream: &mut S,
     keypair: &Keypair,
     address: &Address,
+    target_agent: Option<&str>,
 ) -> Result<HandshakeResult, Error>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -69,6 +73,7 @@ where
         address: address.clone(),
         protocol_version: PROTOCOL_VERSION.into(),
         rotation_proof: None,
+        target_agent: target_agent.map(String::from),
     };
     framing::write_length_prefixed(stream, &serde_json::to_vec(&creds)?).await?;
 
@@ -89,6 +94,7 @@ where
         peer_address: recv_creds.address,
         session_id: recv_creds.session_id,
         rotation_proof: recv_creds.rotation_proof,
+        target_agent: target_agent.map(String::from),
     })
 }
 
@@ -130,6 +136,16 @@ where
         return Err(Error::InvalidEnvelope("blocked".into()));
     }
 
+    // Validate target agent name if provided
+    if let Some(ref target) = init_creds.target_agent {
+        if target != &address.agent_name {
+            return Err(Error::InvalidEnvelope(format!(
+                "agent '{}' not found on this endpoint (this is '{}')",
+                target, address.agent_name,
+            )));
+        }
+    }
+
     // Step 3: send receiver credentials
     let (challenge_bytes, challenge_b64) = generate_challenge();
     let session_id = format!("{}{}", SESSION_ID_PREFIX, Uuid::new_v4());
@@ -148,5 +164,6 @@ where
         peer_address: init_creds.address,
         session_id,
         rotation_proof: init_creds.rotation_proof,
+        target_agent: init_creds.target_agent,
     })
 }

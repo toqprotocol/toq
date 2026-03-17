@@ -2399,7 +2399,7 @@ async fn run_send(
     println!("Connecting to {target_addr}...");
 
     let (info, mut stream) =
-        match server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features)
+        match server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features, Some(&target_addr.agent_name))
             .await
         {
             Ok(r) => r,

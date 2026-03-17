@@ -230,7 +230,7 @@ pub async fn send_message(
             let addr_str = target.to_string();
             let connect_addr = toq_core::transport::resolve_target_addr(&target, &local_host).await;
             let conn =
-                server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats).await;
+                server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats, Some(&target.agent_name)).await;
             let (info, mut stream) = match conn {
                 Ok(r) => r,
                 Err(e) => {
@@ -371,7 +371,7 @@ async fn send_to_single(
     let connect_addr =
         toq_core::transport::resolve_target_addr(&p.target_addr, &state.address.host).await;
     let connect_result =
-        server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features).await;
+        server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features, Some(&p.target_addr.agent_name)).await;
 
     let (info, mut stream) = match connect_result {
         Ok(r) => r,
@@ -624,6 +624,7 @@ pub async fn stream_start(
         &state.address,
         &local_card,
         &features,
+        Some(&target_addr.agent_name),
     )
     .await;
 
@@ -1061,7 +1062,7 @@ pub async fn ping_agent(State(state): State<ApiState>, Json(body): Json<PingBody
     drop(config);
 
     let connect_addr = toq_core::transport::resolve_target_addr(&target, &address.host).await;
-    match server::ping_peer(&connect_addr, &keypair, &address).await {
+    match server::ping_peer(&connect_addr, &keypair, &address, Some(&target.agent_name)).await {
         Ok(result) => json_ok(serde_json::json!({
             "agent_name": result.peer_address.agent_name,
             "address": body.address,
