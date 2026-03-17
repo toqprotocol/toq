@@ -92,7 +92,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ARCHIVE="toq-${{ github.ref_name }}-${{ matrix.target }}"
-          gh release upload ${{ github.ref_name }} "$ARCHIVE.tar.gz" "$ARCHIVE.tar.gz.sha256"
+          gh release upload ${{ github.ref_name }} "$ARCHIVE.tar.gz" "$ARCHIVE.tar.gz.sha256" --clobber
 
   publish:
     needs: build
