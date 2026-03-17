@@ -229,8 +229,15 @@ pub async fn send_message(
         handles.push(tokio::spawn(async move {
             let addr_str = target.to_string();
             let connect_addr = toq_core::transport::resolve_target_addr(&target, &local_host).await;
-            let conn =
-                server::connect_to_peer(&connect_addr, &kp, &state2.address, &card, &feats, Some(&target.agent_name)).await;
+            let conn = server::connect_to_peer(
+                &connect_addr,
+                &kp,
+                &state2.address,
+                &card,
+                &feats,
+                Some(&target.agent_name),
+            )
+            .await;
             let (info, mut stream) = match conn {
                 Ok(r) => r,
                 Err(e) => {
@@ -370,8 +377,15 @@ async fn send_to_single(
 ) -> Response {
     let connect_addr =
         toq_core::transport::resolve_target_addr(&p.target_addr, &state.address.host).await;
-    let connect_result =
-        server::connect_to_peer(&connect_addr, keypair, &state.address, local_card, features, Some(&p.target_addr.agent_name)).await;
+    let connect_result = server::connect_to_peer(
+        &connect_addr,
+        keypair,
+        &state.address,
+        local_card,
+        features,
+        Some(&p.target_addr.agent_name),
+    )
+    .await;
 
     let (info, mut stream) = match connect_result {
         Ok(r) => r,

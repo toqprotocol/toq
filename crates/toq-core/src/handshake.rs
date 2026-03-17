@@ -151,7 +151,11 @@ where
                 target, address.agent_name,
             );
             let err_resp = serde_json::json!({ "error": err_msg });
-            let _ = framing::write_length_prefixed(stream, &serde_json::to_vec(&err_resp).unwrap_or_default()).await;
+            let _ = framing::write_length_prefixed(
+                stream,
+                &serde_json::to_vec(&err_resp).unwrap_or_default(),
+            )
+            .await;
             return Err(Error::ConnectionRejected(err_msg));
         }
     }

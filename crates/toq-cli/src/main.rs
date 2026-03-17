@@ -2398,27 +2398,33 @@ async fn run_send(
     let connect_addr = toq_core::transport::resolve_target_addr(&target_addr, &config.host).await;
     println!("Connecting to {target_addr}...");
 
-    let (info, mut stream) =
-        match server::connect_to_peer(&connect_addr, &keypair, &address, &local_card, &features, Some(&target_addr.agent_name))
-            .await
+    let (info, mut stream) = match server::connect_to_peer(
+        &connect_addr,
+        &keypair,
+        &address,
+        &local_card,
+        &features,
+        Some(&target_addr.agent_name),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(toq_core::error::Error::ConnectionRejected(reason)) => {
+            eprintln!("Send failed: {reason}");
+            std::process::exit(1);
+        }
+        Err(toq_core::error::Error::Io(msg)) if msg.contains("Connection refused") => {
+            eprintln!("Send failed: no agent running at {target_addr}");
+            std::process::exit(1);
+        }
+        Err(toq_core::error::Error::Io(msg))
+            if msg.contains("timed out") || msg.contains("timeout") =>
         {
-            Ok(r) => r,
-            Err(toq_core::error::Error::ConnectionRejected(reason)) => {
-                eprintln!("Send failed: {reason}");
-                std::process::exit(1);
-            }
-            Err(toq_core::error::Error::Io(msg)) if msg.contains("Connection refused") => {
-                eprintln!("Send failed: no agent running at {target_addr}");
-                std::process::exit(1);
-            }
-            Err(toq_core::error::Error::Io(msg))
-                if msg.contains("timed out") || msg.contains("timeout") =>
-            {
-                eprintln!("Send failed: connection timed out reaching {target_addr}");
-                std::process::exit(1);
-            }
-            Err(e) => return Err(e.into()),
-        };
+            eprintln!("Send failed: connection timed out reaching {target_addr}");
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     println!(
         "connected to {} ({})",
